@@ -30,6 +30,7 @@ pub fn base(name: &str, kind: RuleKind, severity: Severity) -> Rule {
         wellbeing: false,
         pack: None,
         alert: Default::default(),
+        channel_alerts: Default::default(),
     }
 }
 

@@ -160,9 +160,22 @@ pub struct Rule {
     /// Which default pack this came from, if any.
     #[serde(default)]
     pub pack: Option<String>,
-    /// Alert override: follow the channel's level, always alert, or never alert.
+    /// Alert override for every channel: follow the channel's level, always alert, or never alert.
     #[serde(default)]
     pub alert: crate::alerts::RuleAlert,
+    /// Per-channel alert overrides (channel login → override). These win over `alert`.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub channel_alerts: std::collections::BTreeMap<String, crate::alerts::RuleAlert>,
+}
+
+impl Rule {
+    /// The alert override that applies to this rule in `channel`.
+    pub fn alert_in(&self, channel: &str) -> crate::alerts::RuleAlert {
+        match self.channel_alerts.get(channel) {
+            Some(a) if *a != crate::alerts::RuleAlert::Default => *a,
+            _ => self.alert,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -633,8 +646,9 @@ impl RuleEngine {
         }
     }
 
-    pub fn alert_of(&self, rule_id: i64) -> crate::alerts::RuleAlert {
-        self.rules.iter().find(|c| c.rule.id == rule_id).map(|c| c.rule.alert).unwrap_or_default()
+    /// The alert override for a rule in a given channel.
+    pub fn alert_for(&self, rule_id: i64, channel: &str) -> crate::alerts::RuleAlert {
+        self.rules.iter().find(|c| c.rule.id == rule_id).map(|c| c.rule.alert_in(channel)).unwrap_or_default()
     }
 
     pub fn kind_of(&self, rule_id: i64) -> Option<RuleKind> {
@@ -852,6 +866,7 @@ mod tests {
             wellbeing: false,
             pack: None,
             alert: Default::default(),
+            channel_alerts: Default::default(),
         }
     }
 
@@ -1126,6 +1141,21 @@ mod tests {
         let mut off = rule(RuleKind::Keyword, &["x"]);
         off.enabled = false;
         assert!(check(off, "x").is_empty());
+    }
+
+    #[test]
+    fn per_channel_alert_overrides() {
+        use crate::alerts::RuleAlert;
+        let mut r = rule(RuleKind::Keyword, &["x"]);
+        r.alert = RuleAlert::Never;
+        r.channel_alerts.insert("loud".into(), RuleAlert::Always);
+        r.channel_alerts.insert("same".into(), RuleAlert::Default);
+        assert_eq!(r.alert_in("loud"), RuleAlert::Always);
+        assert_eq!(r.alert_in("other"), RuleAlert::Never); // falls back to the rule-wide setting
+        assert_eq!(r.alert_in("same"), RuleAlert::Never); // "default" per channel = use the rule-wide setting
+        let engine = RuleEngine::new(&[r]);
+        assert_eq!(engine.alert_for(1, "loud"), RuleAlert::Always);
+        assert_eq!(engine.alert_for(99, "loud"), RuleAlert::Default);
     }
 
     #[test]

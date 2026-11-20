@@ -20,6 +20,7 @@ interface Props {
   onAlerts: (name: string, level: AlertLevel, sound: boolean) => void;
   onColor: (name: string, color: string | null) => void;
   onShoutoutMessage: (name: string, message: string) => void;
+  onOpenRuleAlerts: (name: string) => void;
   onRaidMode: (name: string, minutes: number) => void;
   onLogout: () => void;
   inboxConnected: boolean | null;
@@ -138,6 +139,10 @@ export function Sidebar(p: Props) {
                   onAlerts={(level, sound) => p.onAlerts(c.name, level, sound)}
                   onColor={(color) => p.onColor(c.name, color)}
                   onShoutoutMessage={(m) => p.onShoutoutMessage(c.name, m)}
+                  onOpenRuleAlerts={() => {
+                    setSettingsFor(null);
+                    p.onOpenRuleAlerts(c.name);
+                  }}
                   onClose={() => setSettingsFor(null)}
                 />
               )}

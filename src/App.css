@@ -531,3 +531,21 @@ kbd {
 .activity-tag.announcement { background: rgba(61, 220, 151, 0.15); color: var(--ok); }
 .tabs { overflow-x: auto; }
 .tabs button { white-space: nowrap; }
+
+/* ---------- alerts by channel ---------- */
+.settings { max-width: 860px; }
+.channel-alerts { display: flex; flex-direction: column; gap: 10px; }
+.ca-channels { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip { display: inline-flex; align-items: center; gap: 6px; border-radius: 14px; padding: 3px 11px; color: var(--muted); }
+.chip.on { color: var(--text); background: var(--panel-2); border-width: 2px; }
+.ca-level { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+.ca-group { border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+.ca-group-head { display: flex; align-items: center; gap: 6px; padding: 7px 10px; background: var(--bg); border-bottom: 1px solid var(--border); }
+.ca-row { display: flex; align-items: center; gap: 10px; padding: 6px 10px; border-bottom: 1px solid var(--border); font-size: 13px; }
+.ca-row:last-child { border-bottom: none; }
+.ca-row.inactive { opacity: 0.55; }
+.ca-name { flex: 1; min-width: 0; }
+.small-seg button { padding: 2px 9px; font-size: 12px; }
+.ca-eff { width: 80px; text-align: right; font-size: 12px; white-space: nowrap; }
+.ca-eff.yes { color: var(--medium); }
+.ca-eff.no { color: var(--muted); }

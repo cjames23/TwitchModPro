@@ -28,6 +28,7 @@ import { Rules } from "./components/Rules";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { Tuning } from "./components/Tuning";
 import { ActivityFeed, ModLog } from "./components/Feeds";
+import { ChannelAlerts } from "./components/ChannelAlerts";
 import { LoginScreen } from "./components/LoginScreen";
 import { UserPanel } from "./components/UserPanel";
 import type { ActionHandlers } from "./components/ModActions";
@@ -72,6 +73,7 @@ export default function App() {
   const [editRuleId, setEditRuleId] = useState<number | null>(null);
   const [modLog, setModLog] = useState<ModLogEntry[]>([]);
   const [activity, setActivity] = useState<Activity[]>([]);
+  const [alertsFocus, setAlertsFocus] = useState<string | null>(null);
 
   // Tag colors come from each channel's saved color.
   setChannelColors(channels);
@@ -348,6 +350,11 @@ export default function App() {
             toast(String(e), "error");
           }
         }}
+        onOpenRuleAlerts={(name) => {
+          setAlertsFocus(name);
+          setTab("settings");
+          setTimeout(() => document.getElementById("alerts-by-channel")?.scrollIntoView({ block: "start" }), 50);
+        }}
         onShoutoutMessage={async (name, message) => {
           setChannels(await api.setShoutoutMessage(name, message));
           toast(message.trim() ? `Shoutout message saved for #${name}` : `Shoutout message removed for #${name}`, "ok");
@@ -418,7 +425,23 @@ export default function App() {
               }}
             />
           )}
-          {tab === "settings" && <SettingsPanel settings={settings} onChange={updateSettings} />}
+          {tab === "settings" && (
+            <SettingsPanel
+              settings={settings}
+              onChange={updateSettings}
+              channelAlerts={
+                <ChannelAlerts
+                  channels={channels}
+                  rules={rules}
+                  settings={settings}
+                  focus={alertsFocus}
+                  onRules={setRules}
+                  onChannelAlerts={async (name, level, sound) => setChannels(await api.setChannelAlerts(name, level, sound))}
+                  toast={toast}
+                />
+              }
+            />
+          )}
         </div>
       </main>
 

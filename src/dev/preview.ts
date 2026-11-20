@@ -328,6 +328,18 @@ mockIPC(
           { id: 2, channel: "pixelqueen", kind: "follow", userLogin: "newbie", displayName: "Newbie", text: "followed", timestamp: now - 12 * 60_000 },
           { id: 1, channel: "kitdy", kind: "announcement", userLogin: "kitdy", displayName: "kitdy", text: "Announcement: giveaway at 9pm!", timestamp: now - 30 * 60_000 },
         ];
+      case "set_rule_channel_alert":
+        rules = rules.map((x) =>
+          x.id === args.ruleId ? { ...x, channelAlerts: { ...(x.channelAlerts ?? {}), [args.channel]: args.alert } } : x,
+        );
+        return rules;
+      case "set_pack_channel_alert":
+        rules = rules.map((x) =>
+          args.pack === "*" || (x.pack ?? null) === args.pack
+            ? { ...x, channelAlerts: { ...(x.channelAlerts ?? {}), [args.channel]: args.alert } }
+            : x,
+        );
+        return rules;
       case "rule_stats":
         return ruleStats;
       case "restore_default_packs":

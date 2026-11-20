@@ -7,6 +7,7 @@ interface Props {
   onAlerts: (level: AlertLevel, sound: boolean) => void;
   onColor: (color: string | null) => void;
   onShoutoutMessage: (message: string) => void;
+  onOpenRuleAlerts: () => void;
   onClose: () => void;
 }
 
@@ -18,7 +19,7 @@ const LEVELS: { value: AlertLevel; label: string }[] = [
   { value: "off", label: "Off (queue only)" },
 ];
 
-export function ChannelSettings({ channel, onAlerts, onColor, onShoutoutMessage, onClose }: Props) {
+export function ChannelSettings({ channel, onAlerts, onColor, onShoutoutMessage, onOpenRuleAlerts, onClose }: Props) {
   const [message, setMessage] = useState(channel.shoutoutMessage);
 
   useEffect(() => {
@@ -72,9 +73,10 @@ export function ChannelSettings({ channel, onAlerts, onColor, onShoutoutMessage,
           />
           Play sounds for this channel
         </label>
-        <span className="hint">
-          “My default” uses the Alerts tab. Every flag still lands in the queue, and rules can override this in the rule editor.
-        </span>
+        <button className="small" onClick={onOpenRuleAlerts}>
+          Choose alerts per rule for #{channel.name} →
+        </button>
+        <span className="hint">“My default” uses the Alerts tab. Every flag still lands in the queue.</span>
       </div>
 
       <div className="cs-section">

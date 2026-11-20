@@ -6,7 +6,16 @@ const TIMEOUT_CHOICES = [60, 600, 3600, 21600, 86400, 604800];
 const choiceLabel = (s: number) =>
   s % 86400 === 0 ? `${s / 86400}d` : s % 3600 === 0 ? `${s / 3600}h` : `${s / 60}m`;
 
-export function SettingsPanel({ settings, onChange }: { settings: Settings; onChange: (s: Settings) => void }) {
+export function SettingsPanel({
+  settings,
+  onChange,
+  channelAlerts,
+}: {
+  settings: Settings;
+  onChange: (s: Settings) => void;
+  /** The per-streamer alerts section. */
+  channelAlerts?: React.ReactNode;
+}) {
   const set = <K extends keyof Settings>(k: K, v: Settings[K]) => onChange({ ...settings, [k]: v });
 
   return (
@@ -15,8 +24,14 @@ export function SettingsPanel({ settings, onChange }: { settings: Settings; onCh
         <h2>Alerts</h2>
       </header>
       <div className="settings">
+        {channelAlerts && (
+          <div className="setting-group" id="alerts-by-channel">
+            <h3>Alerts by channel</h3>
+            {channelAlerts}
+          </div>
+        )}
         <div className="setting-group">
-          <h3>Flagged messages</h3>
+          <h3>Default for flagged messages</h3>
           <label className="check">
             <input type="checkbox" checked={settings.notifyFlags} onChange={(e) => set("notifyFlags", e.target.checked)} />
             Desktop notification when a message is flagged

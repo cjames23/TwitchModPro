@@ -62,7 +62,7 @@ Built with [Tauri 2](https://tauri.app) (Rust backend) and React + TypeScript.
   - **sound** on or off
   - **shoutout chat message**
 
-  Each rule can also **always** or **never** alert, regardless of the channel's level.
+- **Alerts by channel** (Alerts tab, or "Choose alerts per rule" in a channel's ⚙): pick a streamer, then set every rule, or a whole pack at once, to follow that channel's level, **always** alert, or **never** alert. Each streamer's chat is configured independently. A 🔔 column shows what will actually alert there.
 - **Shoutouts.** A 📣 Shoutout button on raid alerts and in the raid log sends Twitch's native `/shoutout`, plus an optional per-channel chat message such as `!so @{raider}`.
 - **Mod log.** Every mod action in your channels, by any moderator, as Twitch reports it live. You can filter by type and by mod.
 - **Activity feed.** Follows, subs, resubs, gift subs, bits and announcements across your channels.

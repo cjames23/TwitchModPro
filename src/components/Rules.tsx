@@ -465,12 +465,24 @@ function RuleEditor({
       </div>
 
       <label className="field">
-        <span>Alerts</span>
+        <span>Alerts (all channels)</span>
         <select value={rule.alert} onChange={(e) => set("alert", e.target.value as Rule["alert"])}>
-          <option value="default">Follow each channel's alert setting</option>
+          <option value="default">Follow each channel's alert level</option>
           <option value="always">Always alert (unless the channel's alerts are off)</option>
           <option value="never">Never alert, just add to the queue</option>
         </select>
+        {Object.entries(rule.channelAlerts ?? {}).filter(([, v]) => v !== "default").length > 0 ? (
+          <span className="hint">
+            Per-streamer settings win over this:{" "}
+            {Object.entries(rule.channelAlerts ?? {})
+              .filter(([, v]) => v !== "default")
+              .map(([c, v]) => `#${c} ${v}`)
+              .join(", ")}
+            . Change them in Alerts → Alerts by channel.
+          </span>
+        ) : (
+          <span className="hint">To set this differently for each streamer, use Alerts → Alerts by channel.</span>
+        )}
       </label>
 
       <div className="field-row">

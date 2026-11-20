@@ -127,6 +127,8 @@ pub fn run() {
             commands::shoutout,
             commands::get_mod_log,
             commands::get_activity,
+            commands::set_rule_channel_alert,
+            commands::set_pack_channel_alert,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

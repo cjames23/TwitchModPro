@@ -73,8 +73,12 @@ export interface Rule {
   mode: "active" | "test";
   wellbeing: boolean;
   pack: string | null;
-  alert: "default" | "always" | "never";
+  alert: RuleAlertSetting;
+  /** Per-channel overrides (channel login → setting); these win over `alert`. */
+  channelAlerts?: Record<string, RuleAlertSetting>;
 }
+
+export type RuleAlertSetting = "default" | "always" | "never";
 
 export interface RuleMatch {
   ruleId: number;

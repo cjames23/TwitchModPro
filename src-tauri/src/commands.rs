@@ -227,6 +227,44 @@ pub fn delete_rule(state: State<AppState>, id: i64) -> Result<Vec<Rule>, String>
     rebuild_engine(&state.core)
 }
 
+fn parse_rule_alert(alert: &str) -> Result<crate::alerts::RuleAlert, String> {
+    match alert {
+        "default" => Ok(crate::alerts::RuleAlert::Default),
+        "always" => Ok(crate::alerts::RuleAlert::Always),
+        "never" => Ok(crate::alerts::RuleAlert::Never),
+        other => Err(format!("Unknown alert setting `{other}`")),
+    }
+}
+
+/// Set how one rule alerts in one channel ("default" removes the override).
+#[tauri::command]
+pub fn set_rule_channel_alert(state: State<AppState>, rule_id: i64, channel: String, alert: String) -> Result<Vec<Rule>, String> {
+    set_channel_alerts_for(&state.core, &channel, &alert, |r| r.id == rule_id)
+}
+
+/// Set how every rule in a pack alerts in one channel. `pack` None = rules not from a pack; "*" = every rule.
+#[tauri::command]
+pub fn set_pack_channel_alert(state: State<AppState>, pack: Option<String>, channel: String, alert: String) -> Result<Vec<Rule>, String> {
+    set_channel_alerts_for(&state.core, &channel, &alert, |r| pack.as_deref() == Some("*") || r.pack == pack)
+}
+
+fn set_channel_alerts_for(core: &crate::core::Core, channel: &str, alert: &str, pick: impl Fn(&Rule) -> bool) -> Result<Vec<Rule>, String> {
+    let channel = normalize_channel(channel)?;
+    let alert = parse_rule_alert(alert)?;
+    {
+        let db = core.db.lock().unwrap();
+        for mut r in db.rules()?.into_iter().filter(|r| pick(r)) {
+            if alert == crate::alerts::RuleAlert::Default {
+                r.channel_alerts.remove(&channel);
+            } else {
+                r.channel_alerts.insert(channel.clone(), alert);
+            }
+            db.save_rule(&r)?;
+        }
+    }
+    rebuild_engine(core)
+}
+
 /// Try a rule against sample text without saving it.
 #[tauri::command]
 pub fn test_rule(rule: Rule, text: String, username: Option<String>, first_message: Option<bool>) -> Result<Vec<RuleMatch>, String> {

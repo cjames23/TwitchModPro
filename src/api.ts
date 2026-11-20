@@ -57,6 +57,11 @@ export const api = {
     invoke<RuleMatch[]>("test_rule", { rule, text, username, firstMessage }),
   ruleStats: (days: number) => invoke<RuleStats[]>("rule_stats", { days }),
   restoreDefaultPacks: () => invoke<Rule[]>("restore_default_packs"),
+  setRuleChannelAlert: (ruleId: number, channel: string, alert: string) =>
+    invoke<Rule[]>("set_rule_channel_alert", { ruleId, channel, alert }),
+  /** pack: a pack name, null for your own rules, or "*" for every rule. */
+  setPackChannelAlert: (pack: string | null, channel: string, alert: string) =>
+    invoke<Rule[]>("set_pack_channel_alert", { pack, channel, alert }),
 
   // flags, raids, settings
   setFlagStatus: (id: number, status: string) => invoke<void>("set_flag_status", { id, status }),

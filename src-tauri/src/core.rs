@@ -757,7 +757,7 @@ impl Core {
         }
         let overrides: Vec<RuleAlert> = {
             let engine = self.engine.read().unwrap();
-            flag.matches.iter().filter(|m| m.rule_id > 0).map(|m| engine.alert_of(m.rule_id)).collect()
+            flag.matches.iter().filter(|m| m.rule_id > 0).map(|m| engine.alert_for(m.rule_id, &flag.channel)).collect()
         };
         let global = GlobalAlerts { enabled: settings.notify_flags, min_severity: settings.notify_min_severity };
         let alert = flag_alerts(level, global, flag.severity, &overrides);
