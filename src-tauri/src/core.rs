@@ -1,7 +1,8 @@
 //! App core: login session, mod-verified channels, chat processing, raid mode,
 //! user history and moderation actions.
 
-use crate::db::{Channel, ContextLine, Db, Flag, ModAction, Raid, RuleHit};
+use crate::alerts::{flag_alerts, GlobalAlerts, RuleAlert};
+use crate::db::{Activity, Channel, ContextLine, Db, Flag, ModAction, Raid, RuleHit};
 use crate::eventsub::EventSubClient;
 use crate::irc::{ChatMessage, RaidNotice};
 use crate::rules::{EvalCtx, RuleEngine, RuleKind, RuleMatch, Severity};
@@ -65,6 +66,17 @@ pub struct AuthState {
     pub error: Option<String>,
     /// True while the saved login is being checked at startup.
     pub checking: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShoutoutResult {
+    /// Error from Twitch's native shoutout, if it failed.
+    pub native: Option<String>,
+    /// The chat message that was sent, if any.
+    pub message_sent: Option<String>,
+    pub message_error: Option<String>,
+    pub raid: Raid,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -596,6 +608,15 @@ impl Core {
             ChatEvent::Chat(msg) => self.on_chat(msg),
             ChatEvent::Raid(raid) => self.on_raid(raid),
             ChatEvent::Mod(ev) => self.on_mod_event(ev),
+            ChatEvent::Activity(a) => self.add_activity(Activity {
+                id: 0,
+                channel: a.channel,
+                kind: a.kind,
+                user_login: a.user_login,
+                display_name: a.display_name,
+                text: a.text,
+                timestamp: a.timestamp,
+            }),
             ChatEvent::Notice { channel, text } => {
                 let _ = self.app.emit("notice", serde_json::json!({ "channel": channel, "text": text }));
             }
@@ -723,18 +744,24 @@ impl Core {
 
     /// Save a new flag, start collecting follow-up context, alert if needed and send it to the UI.
     pub(crate) fn add_flag(&self, mut flag: Flag) -> Flag {
-        let (settings, muted) = {
+        let (settings, (level, channel_sound)) = {
             let db = self.db.lock().unwrap();
             match db.insert_flag(&flag) {
                 Ok(id) => flag.id = id,
                 Err(e) => eprintln!("failed to save flag: {e}"),
             }
-            (db.settings(), db.is_muted(&flag.channel))
+            (db.settings(), db.channel_alerts(&flag.channel))
         };
         if flag.id > 0 && flag.kind == "rule" {
             self.pending_after.lock().unwrap().entry(flag.channel.clone()).or_default().push((flag.id, CONTEXT_AFTER));
         }
-        let alert = !muted && settings.notify_flags && flag.severity >= settings.notify_min_severity;
+        let overrides: Vec<RuleAlert> = {
+            let engine = self.engine.read().unwrap();
+            flag.matches.iter().filter(|m| m.rule_id > 0).map(|m| engine.alert_of(m.rule_id)).collect()
+        };
+        let global = GlobalAlerts { enabled: settings.notify_flags, min_severity: settings.notify_min_severity };
+        let alert = flag_alerts(level, global, flag.severity, &overrides);
+        let sound = alert && channel_sound && settings.play_sounds;
         if alert && self.should_notify(&flag.channel) {
             let what = match flag.kind.as_str() {
                 "automod" => "AutoMod is holding a message".to_string(),
@@ -744,12 +771,12 @@ impl Core {
             };
             self.notify(&format!("#{}: {what}", flag.channel), &format!("{}: {}", flag.display_name, flag.text));
         }
-        let _ = self.app.emit("flag", serde_json::json!({ "flag": flag, "alert": alert }));
+        let _ = self.app.emit("flag", serde_json::json!({ "flag": flag, "alert": alert, "sound": sound }));
         flag
     }
 
     fn on_raid(&self, notice: RaidNotice) {
-        let (raid, settings, muted): (Raid, _, _) = {
+        let (raid, settings, (level, channel_sound)): (Raid, _, _) = {
             let db = self.db.lock().unwrap();
             let raid = match db.insert_raid(&notice) {
                 Ok(r) => r,
@@ -758,8 +785,9 @@ impl Core {
                     return;
                 }
             };
-            (raid, db.settings(), db.is_muted(&notice.channel))
+            (raid, db.settings(), db.channel_alerts(&notice.channel))
         };
+        let muted = level == crate::alerts::ChannelAlertLevel::Off;
         if settings.raid_mode_minutes > 0 {
             self.set_raid_mode(&raid.channel, settings.raid_mode_minutes);
         }
@@ -775,7 +803,49 @@ impl Core {
                 &format!("{} is raiding with {} viewers.{mode}", raid.from_display_name, raid.viewers),
             );
         }
-        let _ = self.app.emit("raid", serde_json::json!({ "raid": raid, "alert": alert }));
+        let sound = alert && channel_sound && settings.play_sounds;
+        let _ = self.app.emit("raid", serde_json::json!({ "raid": raid, "alert": alert, "sound": sound }));
+    }
+
+    pub(crate) fn add_activity(&self, a: Activity) {
+        if let Ok(saved) = self.db.lock().unwrap().insert_activity(&a) {
+            let _ = self.app.emit("activity", &saved);
+        }
+    }
+
+    /// Send Twitch's native shoutout for a raider, plus the channel's optional chat message.
+    pub async fn shoutout(self: &Arc<Self>, raid_id: i64) -> Result<ShoutoutResult, String> {
+        let helix = self.helix()?;
+        let (raid, channel) = {
+            let db = self.db.lock().unwrap();
+            let raid = db.raid_by_id(raid_id)?.ok_or("That raid is gone.")?;
+            let channel = db.channels()?.into_iter().find(|c| c.name == raid.channel).ok_or("That channel isn't monitored any more.")?;
+            (raid, channel)
+        };
+        if !channel.is_mod {
+            return Err(format!("You're not a moderator in #{}.", channel.name));
+        }
+        let from = channel.broadcaster_id.clone().ok_or("Missing the channel ID; try refreshing your channel list.")?;
+        let to = match raid.from_user_id.clone() {
+            Some(id) => id,
+            None => helix.user_id(&raid.from_login).await.map_err(|e| e.to_string())?,
+        };
+        let native = helix.shoutout(&from, &to).await.map_err(|e| e.to_string());
+        if native.is_ok() {
+            let _ = self.db.lock().unwrap().set_raid_shoutout(raid.id, now_ms());
+        }
+        let message = if channel.shoutout_message.trim().is_empty() {
+            None
+        } else {
+            let text = channel
+                .shoutout_message
+                .replace("{raider}", &raid.from_login)
+                .replace("{raider_name}", &raid.from_display_name)
+                .replace("{viewers}", &raid.viewers.to_string());
+            Some(helix.send_chat_message(&from, &text).await.map(|_| text).map_err(|e| e.to_string()))
+        };
+        let raid = self.db.lock().unwrap().raid_by_id(raid.id)?.ok_or("That raid is gone.")?;
+        Ok(ShoutoutResult { native: native.err(), message_sent: message.as_ref().and_then(|m| m.as_ref().ok().cloned()), message_error: message.and_then(|m| m.err()), raid })
     }
 
     pub(crate) fn should_notify(&self, channel: &str) -> bool {

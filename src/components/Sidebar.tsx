@@ -1,7 +1,8 @@
 import { useState } from "react";
-import type { Account, Channel, ConnectionInfo, RaidModes } from "../types";
+import type { Account, AlertLevel, Channel, ConnectionInfo, RaidModes } from "../types";
 import { channelColor } from "../util";
 import { ChannelPicker } from "./ChannelPicker";
+import { ChannelSettings } from "./ChannelSettings";
 
 interface Props {
   account: Account;
@@ -16,6 +17,9 @@ interface Props {
   onAdd: (name: string) => Promise<void>;
   onRemove: (name: string) => void;
   onToggleMute: (name: string, muted: boolean) => void;
+  onAlerts: (name: string, level: AlertLevel, sound: boolean) => void;
+  onColor: (name: string, color: string | null) => void;
+  onShoutoutMessage: (name: string, message: string) => void;
   onRaidMode: (name: string, minutes: number) => void;
   onLogout: () => void;
   inboxConnected: boolean | null;
@@ -29,6 +33,7 @@ function countdown(ms: number) {
 export function Sidebar(p: Props) {
   const [picking, setPicking] = useState(false);
   const [confirming, setConfirming] = useState<string | null>(null);
+  const [settingsFor, setSettingsFor] = useState<string | null>(null);
 
   const statusLabel = {
     connected: "Connected to Twitch chat",
@@ -83,6 +88,13 @@ export function Sidebar(p: Props) {
                   </button>
                 )}
                 <button
+                  className={`icon-btn ${settingsFor === c.name ? "muted" : ""}`}
+                  title="Channel settings: color, alerts, shoutout message"
+                  onClick={() => setSettingsFor(settingsFor === c.name ? null : c.name)}
+                >
+                  ⚙
+                </button>
+                <button
                   className={`icon-btn ${c.muted ? "muted" : ""}`}
                   title={c.muted ? "Alerts muted: click to unmute" : "Mute alerts for this channel"}
                   onClick={() => p.onToggleMute(c.name, !c.muted)}
@@ -117,6 +129,18 @@ export function Sidebar(p: Props) {
                 </div>
               )}
               {!c.isMod && <div className="not-mod-note">Not a mod here, so it isn't monitored</div>}
+              {c.alertLevel !== "default" && c.alertLevel !== "off" && (
+                <div className="alert-level-note">Alerts: {c.alertLevel === "all" ? "everything" : `${c.alertLevel}+`}</div>
+              )}
+              {settingsFor === c.name && (
+                <ChannelSettings
+                  channel={c}
+                  onAlerts={(level, sound) => p.onAlerts(c.name, level, sound)}
+                  onColor={(color) => p.onColor(c.name, color)}
+                  onShoutoutMessage={(m) => p.onShoutoutMessage(c.name, m)}
+                  onClose={() => setSettingsFor(null)}
+                />
+              )}
             </div>
           );
         })}

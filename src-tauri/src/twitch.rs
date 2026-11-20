@@ -3,7 +3,7 @@
 //! Connects anonymously (no login needed to read public chats), joins any number of
 //! channels, reconnects with backoff, and respects Twitch's JOIN rate limit.
 
-use crate::irc::{parse_line, ChatMessage, ModEvent, RaidNotice};
+use crate::irc::{parse_line, ActivityNotice, ChatMessage, ModEvent, RaidNotice};
 use futures_util::{SinkExt, StreamExt};
 use serde::Serialize;
 use std::collections::{BTreeSet, VecDeque};
@@ -36,6 +36,8 @@ pub enum ChatEvent {
     Raid(RaidNotice),
     /// A timeout, ban or message deletion by any moderator.
     Mod(ModEvent),
+    /// Subs, gifts, bits, announcements.
+    Activity(ActivityNotice),
     /// Server notice, e.g. a channel that doesn't exist or is suspended.
     Notice { channel: Option<String>, text: String },
 }
@@ -178,6 +180,9 @@ async fn session(
                         "001" => sink(ChatEvent::Status(ConnStatus::Connected)),
                         "RECONNECT" => reconnect = true,
                         "PRIVMSG" => {
+                            if let Some(a) = ActivityNotice::from_irc(&msg) {
+                                sink(ChatEvent::Activity(a));
+                            }
                             if let Some(chat) = ChatMessage::from_irc(&msg) {
                                 sink(ChatEvent::Chat(chat));
                             }
@@ -185,6 +190,8 @@ async fn session(
                         "USERNOTICE" => {
                             if let Some(raid) = RaidNotice::from_irc(&msg) {
                                 sink(ChatEvent::Raid(raid));
+                            } else if let Some(a) = ActivityNotice::from_irc(&msg) {
+                                sink(ChatEvent::Activity(a));
                             }
                         }
                         "CLEARCHAT" | "CLEARMSG" => {

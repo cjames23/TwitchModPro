@@ -61,6 +61,7 @@ const blankRule = (): Rule => ({
   mode: "test",
   wellbeing: false,
   pack: null,
+  alert: "default",
 });
 
 interface Props {
@@ -462,6 +463,15 @@ function RuleEditor({
           Only during raid mode <span className="hint">(for a few minutes after a raid)</span>
         </label>
       </div>
+
+      <label className="field">
+        <span>Alerts</span>
+        <select value={rule.alert} onChange={(e) => set("alert", e.target.value as Rule["alert"])}>
+          <option value="default">Follow each channel's alert setting</option>
+          <option value="always">Always alert (unless the channel's alerts are off)</option>
+          <option value="never">Never alert, just add to the queue</option>
+        </select>
+      </label>
 
       <div className="field-row">
         <label className="field">

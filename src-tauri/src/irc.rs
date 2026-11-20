@@ -144,6 +144,7 @@ fn count_emotes(tag: Option<&str>) -> usize {
 #[serde(rename_all = "camelCase")]
 pub struct RaidNotice {
     pub channel: String,
+    pub from_user_id: Option<String>,
     pub from_login: String,
     pub from_display_name: String,
     pub viewers: i64,
@@ -218,9 +219,70 @@ impl RaidNotice {
                 .unwrap_or(&from_login)
                 .to_string(),
             viewers: msg.tag("msg-param-viewerCount").and_then(|v| v.parse().ok()).unwrap_or(0),
+            from_user_id: msg.tag("user-id").map(str::to_string),
             timestamp: sent_ts(msg),
             from_login,
         })
+    }
+}
+
+/// Something for the activity feed: subs, resubs, gifts, bits, announcements.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ActivityNotice {
+    pub channel: String,
+    pub kind: String,
+    pub user_login: String,
+    pub display_name: String,
+    pub text: String,
+    pub timestamp: i64,
+}
+
+impl ActivityNotice {
+    pub fn from_irc(msg: &IrcMessage) -> Option<Self> {
+        let channel = msg.channel()?;
+        let login = msg.tag("login").or_else(|| msg.nick()).unwrap_or_default().to_lowercase();
+        let display = msg.tag("display-name").unwrap_or(&login).to_string();
+        let user_text = msg.params.get(1).cloned().unwrap_or_default();
+        let joined = |a: &str, b: &str| match (a.is_empty(), b.is_empty()) {
+            (false, false) => format!("{a} “{b}”"),
+            (false, true) => a.to_string(),
+            _ => b.to_string(),
+        };
+
+        if msg.command == "PRIVMSG" {
+            let bits: u32 = msg.tag("bits")?.parse().ok()?;
+            let text = format!("cheered {bits} bit{}", if bits == 1 { "" } else { "s" });
+            return Some(ActivityNotice {
+                channel,
+                kind: "bits".into(),
+                user_login: login,
+                display_name: display,
+                text: joined(&text, &user_text),
+                timestamp: sent_ts(msg),
+            });
+        }
+        if msg.command != "USERNOTICE" {
+            return None;
+        }
+        let system = msg.tag("system-msg").unwrap_or_default().trim().to_string();
+        let kind = match msg.tag("msg-id")? {
+            "sub" => "sub",
+            "resub" => "resub",
+            // Individual gifts from a gift bomb arrive separately; the bomb itself is enough.
+            "subgift" if msg.tag("msg-param-community-gift-id").is_some() => return None,
+            "subgift" => "subgift",
+            "submysterygift" => "giftbomb",
+            "giftpaidupgrade" | "anongiftpaidupgrade" | "primepaidupgrade" => "upgrade",
+            "announcement" => "announcement",
+            // Raids have their own alerts; shared-chat copies would duplicate other channels.
+            "raid" | "unraid" | "sharedchatnotice" => return None,
+            _ => "other",
+        };
+        let text = if kind == "announcement" { format!("Announcement: {user_text}") } else { joined(&system, &user_text) };
+        if text.trim().is_empty() {
+            return None;
+        }
+        Some(ActivityNotice { channel, kind: kind.into(), user_login: login, display_name: display, text, timestamp: sent_ts(msg) })
     }
 }
 
@@ -290,7 +352,7 @@ mod tests {
 
     #[test]
     fn parses_raid_usernotice() {
-        let line = "@badges=;display-name=BigRaider;login=bigraider;msg-id=raid;msg-param-displayName=BigRaider;msg-param-login=bigraider;msg-param-viewerCount=1337;system-msg=1337\\sraiders\\sfrom\\sBigRaider\\shave\\sjoined!;tmi-sent-ts=1700000001000 :tmi.twitch.tv USERNOTICE #targetchannel";
+        let line = "@badges=;display-name=BigRaider;login=bigraider;user-id=555;msg-id=raid;msg-param-displayName=BigRaider;msg-param-login=bigraider;msg-param-viewerCount=1337;system-msg=1337\\sraiders\\sfrom\\sBigRaider\\shave\\sjoined!;tmi-sent-ts=1700000001000 :tmi.twitch.tv USERNOTICE #targetchannel";
         let msg = parse_line(line).unwrap();
         assert_eq!(msg.tag("system-msg"), Some("1337 raiders from BigRaider have joined!"));
         let raid = RaidNotice::from_irc(&msg).unwrap();
@@ -298,12 +360,34 @@ mod tests {
         assert_eq!(raid.from_login, "bigraider");
         assert_eq!(raid.from_display_name, "BigRaider");
         assert_eq!(raid.viewers, 1337);
+        assert_eq!(raid.from_user_id.as_deref(), Some("555"));
     }
 
     #[test]
     fn non_raid_usernotice_is_ignored() {
         let line = "@msg-id=sub;login=x :tmi.twitch.tv USERNOTICE #chan :yay";
         assert!(RaidNotice::from_irc(&parse_line(line).unwrap()).is_none());
+    }
+
+    #[test]
+    fn parses_activity_notices() {
+        let resub = r"@display-name=Fan;login=fan;msg-id=resub;system-msg=Fan\ssubscribed\sat\sTier\s1.\sThey've\ssubscribed\sfor\s5\smonths!;tmi-sent-ts=1 :tmi.twitch.tv USERNOTICE #chan :love the streams";
+        let a = ActivityNotice::from_irc(&parse_line(resub).unwrap()).unwrap();
+        assert_eq!(a.kind, "resub");
+        assert_eq!(a.text, "Fan subscribed at Tier 1. They've subscribed for 5 months! “love the streams”");
+
+        let bomb_part = r"@login=gifter;msg-id=subgift;msg-param-community-gift-id=123;system-msg=x :tmi.twitch.tv USERNOTICE #chan";
+        assert!(ActivityNotice::from_irc(&parse_line(bomb_part).unwrap()).is_none());
+        let bomb = r"@login=gifter;msg-id=submysterygift;system-msg=gifter\sis\sgifting\s5\sTier\s1\sSubs! :tmi.twitch.tv USERNOTICE #chan";
+        assert_eq!(ActivityNotice::from_irc(&parse_line(bomb).unwrap()).unwrap().kind, "giftbomb");
+
+        let bits = "@bits=100;display-name=Cheery;tmi-sent-ts=1 :cheery!cheery@cheery.tmi.twitch.tv PRIVMSG #chan :Cheer100 gg";
+        let b = ActivityNotice::from_irc(&parse_line(bits).unwrap()).unwrap();
+        assert_eq!((b.kind.as_str(), b.text.as_str()), ("bits", "cheered 100 bits “Cheer100 gg”"));
+        let plain = ":x!x@x.tmi.twitch.tv PRIVMSG #chan :hello";
+        assert!(ActivityNotice::from_irc(&parse_line(plain).unwrap()).is_none());
+        let raid = "@msg-id=raid;login=r;msg-param-viewerCount=5 :tmi.twitch.tv USERNOTICE #chan";
+        assert!(ActivityNotice::from_irc(&parse_line(raid).unwrap()).is_none());
     }
 
     #[test]

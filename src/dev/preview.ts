@@ -41,15 +41,19 @@ let auth: AuthState = {
   error: null,
   checking: false,
 };
+const ch = (name: string, id: string, color: string, extra: Partial<Channel> = {}): Channel => ({
+  name, muted: false, broadcasterId: id, isMod: true, alertLevel: "default", sound: true, color, shoutoutMessage: "", ...extra,
+});
 let channels: Channel[] = [
-  { name: "pixelqueen", muted: false, broadcasterId: "10", isMod: true },
-  { name: "speedrunsam", muted: false, broadcasterId: "11", isMod: true },
-  { name: "cozycafe", muted: true, broadcasterId: "12", isMod: true },
-  { name: "oldfriend", muted: false, broadcasterId: "13", isMod: false },
+  ch("pixelqueen", "10", "#4dabf7", { shoutoutMessage: "!so @{raider}" }),
+  ch("speedrunsam", "11", "#ff8787", { alertLevel: "high" }),
+  ch("kitdy", "12", "#69db7c", { alertLevel: "off", muted: true }),
+  ch("panda", "14", "#ffd43b"),
+  ch("oldfriend", "13", "#b197fc", { isMod: false }),
 ];
 const moderated: ModChannelOption[] = [
   { login: "modmaria", name: "ModMaria", added: false, own: true },
-  { login: "cozycafe", name: "CozyCafe", added: true, own: false },
+  { login: "kitdy", name: "CozyCafe", added: true, own: false },
   { login: "pixelqueen", name: "PixelQueen", added: true, own: false },
   { login: "retroroberto", name: "RetroRoberto", added: false, own: false },
   { login: "speedrunsam", name: "SpeedrunSam", added: true, own: false },
@@ -74,6 +78,7 @@ const r = (x: Partial<Rule> & Pick<Rule, "id" | "name" | "kind" | "severity">): 
   mode: "active",
   wellbeing: false,
   pack: null,
+  alert: "default",
   ...x,
 });
 let rules: Rule[] = [
@@ -109,7 +114,7 @@ const ruleStats = [
     hit(21, "NightOwl", "@pixelqueen my wife would love this game", ["my wife"], 9 * 3600_000),
   ] },
   { ruleId: 25, flags: 0, actioned: 0, reviewed: 0, dismissed: 0, open: 0, lastFired: null, patterns: [], testHits: 2, testSamples: [
-    hit(25, "creepy_carl", "show us your feet", ["show us your", "feet"], 2 * DAY, "cozycafe"),
+    hit(25, "creepy_carl", "show us your feet", ["show us your", "feet"], 2 * DAY, "kitdy"),
   ] },
 ];
 let settings: Settings = {
@@ -133,7 +138,7 @@ let settings: Settings = {
 const ctx = (name: string, text: string, ago: number) => ({ displayName: name, text, timestamp: now - ago });
 let flags: Flag[] = [
   {
-    id: 8, channel: "cozycafe", messageId: "wb1", userId: "u8", userLogin: "quiet_quinn", displayName: "quiet_quinn",
+    id: 8, channel: "kitdy", messageId: "wb1", userId: "u8", userLogin: "quiet_quinn", displayName: "quiet_quinn",
     text: "honestly some days i want to die lol", severity: "medium",
     matches: [{ ruleId: 27, ruleName: "Self-harm statements", severity: "medium", terms: ["i want to die"], wellbeing: true }],
     context: [], contextAfter: [], timestamp: now - 10_000, status: "open", resolution: null,
@@ -166,7 +171,7 @@ let flags: Flag[] = [
     kind: "rule", externalId: null, meta: {},
   },
   {
-    id: 1, channel: "cozycafe", messageId: "m1", userId: "u1", userLogin: "x", displayName: "OldFlag", text: "best viewers here",
+    id: 1, channel: "kitdy", messageId: "m1", userId: "u1", userLogin: "x", displayName: "OldFlag", text: "best viewers here",
     severity: "high", matches: [{ ruleId: 1, ruleName: "Follower/viewer bot spam", severity: "high", terms: ["best viewers"] }],
     context: [], contextAfter: [], timestamp: now - 3600_000, status: "reviewed", resolution: "Timed out 10m",
     kind: "rule", externalId: null, meta: {},
@@ -175,7 +180,7 @@ let flags: Flag[] = [
 flags.find((f) => f.id === 4)!.meta = { accountCreatedAt: now - 2 * DAY };
 flags.unshift(
   {
-    id: 7, channel: "cozycafe", messageId: "am1", userId: "u7", userLogin: "grumpy_gus", displayName: "Grumpy_Gus",
+    id: 7, channel: "kitdy", messageId: "am1", userId: "u7", userLogin: "grumpy_gus", displayName: "Grumpy_Gus",
     text: "you are all absolute [held message text]", severity: "high",
     matches: [{ ruleId: 0, ruleName: "AutoMod", severity: "high", terms: [], reason: "AutoMod: aggression (level 4)" }],
     context: [], contextAfter: [], timestamp: now - 20_000, status: "open", resolution: null,
@@ -197,9 +202,9 @@ flags.unshift(
   },
 );
 let sanctions: ModAction[] = [
-  { id: 100, channel: "cozycafe", targetLogin: "hasty_hal", action: "timeout", durationSecs: 600, reason: "", ok: true, error: null, timestamp: now - 25 * 60_000, byApp: false, targetUserId: "u3" },
+  { id: 100, channel: "kitdy", targetLogin: "hasty_hal", action: "timeout", durationSecs: 600, reason: "", ok: true, error: null, timestamp: now - 25 * 60_000, byApp: false, targetUserId: "u3" },
   { id: 101, channel: "speedrunsam", targetLogin: "hasty_hal", action: "warn", durationSecs: null, reason: "caps", ok: true, error: null, timestamp: now - 3 * DAY, byApp: true, targetUserId: "u3" },
-  { id: 102, channel: "cozycafe", targetLogin: "promo_bot_77", action: "ban", durationSecs: null, reason: "", ok: true, error: null, timestamp: now - 15 * 60_000, byApp: false, targetUserId: "u4" },
+  { id: 102, channel: "kitdy", targetLogin: "promo_bot_77", action: "ban", durationSecs: null, reason: "", ok: true, error: null, timestamp: now - 15 * 60_000, byApp: false, targetUserId: "u4" },
 ];
 const member = (login: string, channel: string, text: string, ago: number, first = true) => ({
   login, displayName: login, userId: `id-${login}`, channel, messageId: `w-${login}`, text, timestamp: now - ago, firstMessage: first, outcome: null,
@@ -220,8 +225,8 @@ let waves: Wave[] = [
 ];
 
 let raids: Raid[] = [
-  { id: 1, channel: "pixelqueen", fromLogin: "bigstreamer", fromDisplayName: "BigStreamer", viewers: 2431, timestamp: now - 30_000, acknowledged: false },
-  { id: 2, channel: "cozycafe", fromLogin: "smallfriend", fromDisplayName: "SmallFriend", viewers: 12, timestamp: now - 2 * 3600_000, acknowledged: true },
+  { id: 1, channel: "pixelqueen", fromLogin: "bigstreamer", fromDisplayName: "BigStreamer", viewers: 2431, timestamp: now - 30_000, acknowledged: false, fromUserId: null, shoutoutAt: null },
+  { id: 2, channel: "kitdy", fromLogin: "smallfriend", fromDisplayName: "SmallFriend", viewers: 12, timestamp: now - 2 * 3600_000, acknowledged: true, fromUserId: null, shoutoutAt: null },
 ];
 let raidModes: RaidModes = { pixelqueen: now + 4 * 60_000 + 30_000 };
 const actions: ModAction[] = [];
@@ -256,7 +261,7 @@ mockIPC(
       case "get_snapshot":
         return {
           channels, rules, settings, flags, raids, raidModes, auth, waves, sanctions,
-          connection: { status: "connected", joined: ["pixelqueen", "speedrunsam", "cozycafe"] },
+          connection: { status: "connected", joined: ["pixelqueen", "speedrunsam", "kitdy"] },
         };
       case "set_client_id":
         auth = { ...auth, clientIdSet: !!args.clientId };
@@ -274,7 +279,7 @@ mockIPC(
         return moderated.map((m) => ({ ...m, added: channels.some((c) => c.name === m.login) }));
       case "add_channel":
         if (!moderated.some((m) => m.login === args.name)) throw `You're not a moderator in #${args.name}, so it can't be added.`;
-        channels = [...channels, { name: args.name, muted: false, broadcasterId: "99", isMod: true }];
+        channels = [...channels, ch(args.name, "99", "#3bc9db")];
         return channels;
       case "remove_channel":
         channels = channels.filter((c) => c.name !== args.name);
@@ -292,6 +297,37 @@ mockIPC(
         rules = rule.id ? rules.map((x) => (x.id === rule.id ? rule : x)) : [...rules, { ...rule, id: rules.length + 10 }];
         return rules;
       }
+      case "set_channel_alerts":
+        channels = channels.map((c) => (c.name === args.name ? { ...c, alertLevel: args.level, sound: args.sound, muted: args.level === "off" } : c));
+        return channels;
+      case "set_channel_color":
+        channels = channels.map((c) => (c.name === args.name ? { ...c, color: args.color } : c));
+        return channels;
+      case "set_shoutout_message":
+        channels = channels.map((c) => (c.name === args.name ? { ...c, shoutoutMessage: args.message } : c));
+        return channels;
+      case "shoutout": {
+        const r = raids.find((x) => x.id === args.raidId)!;
+        const c = channels.find((x) => x.name === r.channel)!;
+        if (r.channel === "kitdy") return { native: "The broadcaster is not streaming live.", messageSent: null, messageError: null, raid: r };
+        const updated = { ...r, shoutoutAt: Date.now() };
+        raids = raids.map((x) => (x.id === r.id ? updated : x));
+        return { native: null, messageSent: c.shoutoutMessage ? c.shoutoutMessage.replace("{raider}", r.fromLogin) : null, messageError: null, raid: updated };
+      }
+      case "get_mod_log":
+        return [
+          { id: 3, channel: "pixelqueen", moderator: "ModMaria", action: "timeout", targetLogin: "promo_bot_77", summary: "timed out promo_bot_77 for 10m (spam)", timestamp: now - 2 * 60_000 },
+          { id: 2, channel: "panda", moderator: "NightBot", action: "slow", targetLogin: null, summary: "turned on slow mode (30s)", timestamp: now - 15 * 60_000 },
+          { id: 1, channel: "kitdy", moderator: "kitdy_mod", action: "ban", targetLogin: "hasty_hal", summary: "banned hasty_hal (ban evasion)", timestamp: now - 40 * 60_000 },
+        ];
+      case "get_activity":
+        return [
+          { id: 5, channel: "pixelqueen", kind: "giftbomb", userLogin: "generous_gary", displayName: "generous_gary", text: "generous_gary is gifting 5 Tier 1 Subs to pixelqueen's community!", timestamp: now - 60_000 },
+          { id: 4, channel: "panda", kind: "bits", userLogin: "cheery", displayName: "Cheery", text: "cheered 100 bits “Cheer100 gg”", timestamp: now - 4 * 60_000 },
+          { id: 3, channel: "speedrunsam", kind: "resub", userLogin: "fan", displayName: "Fan", text: "Fan subscribed at Tier 1. They've subscribed for 5 months! “love the runs”", timestamp: now - 9 * 60_000 },
+          { id: 2, channel: "pixelqueen", kind: "follow", userLogin: "newbie", displayName: "Newbie", text: "followed", timestamp: now - 12 * 60_000 },
+          { id: 1, channel: "kitdy", kind: "announcement", userLogin: "kitdy", displayName: "kitdy", text: "Announcement: giveaway at 9pm!", timestamp: now - 30 * 60_000 },
+        ];
       case "rule_stats":
         return ruleStats;
       case "restore_default_packs":

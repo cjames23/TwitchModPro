@@ -15,8 +15,10 @@ import type {
   Rule,
   Settings,
   Wave,
+  ModLogEntry,
+  Activity,
 } from "./types";
-import { playTone } from "./util";
+import { playTone, setChannelColors } from "./util";
 import { fmtSecs, indexSanctions } from "./intel";
 import { Sidebar } from "./components/Sidebar";
 import { FlagQueue } from "./components/FlagQueue";
@@ -25,13 +27,15 @@ import { RaidBanner, RaidLog } from "./components/Raids";
 import { Rules } from "./components/Rules";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { Tuning } from "./components/Tuning";
+import { ActivityFeed, ModLog } from "./components/Feeds";
 import { LoginScreen } from "./components/LoginScreen";
 import { UserPanel } from "./components/UserPanel";
 import type { ActionHandlers } from "./components/ModActions";
 import type { WaveHandlers } from "./components/WaveCard";
 import type { InboxHandlers } from "./components/FlagQueue";
 
-type Tab = "flags" | "chat" | "raids" | "rules" | "tuning" | "settings";
+type Tab = "flags" | "chat" | "activity" | "modlog" | "raids" | "rules" | "tuning" | "settings";
+const MAX_FEED = 1000;
 const MAX_FLAGS = 500;
 const MAX_RAIDS = 200;
 const MAX_CHAT_PER_CHANNEL = 200;
@@ -66,6 +70,11 @@ export default function App() {
   const [deleted, setDeleted] = useState<Set<string>>(new Set());
   const [inboxConnected, setInboxConnected] = useState<boolean | null>(null);
   const [editRuleId, setEditRuleId] = useState<number | null>(null);
+  const [modLog, setModLog] = useState<ModLogEntry[]>([]);
+  const [activity, setActivity] = useState<Activity[]>([]);
+
+  // Tag colors come from each channel's saved color.
+  setChannelColors(channels);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [now, setNow] = useState(Date.now());
 
@@ -84,17 +93,17 @@ export default function App() {
     (async () => {
       // Subscribe first so nothing that happens during the snapshot is missed.
       const off = await subscribe({
-        onFlag: ({ flag, alert }) => {
+        onFlag: ({ flag, alert, sound }) => {
           setFlags((fs) => (fs.some((f) => f.id === flag.id) ? fs : [flag, ...fs].slice(0, MAX_FLAGS)));
-          if (alert && settingsRef.current?.playSounds) playTone("flag");
+          if (sound ?? (alert && settingsRef.current?.playSounds)) playTone("flag");
         },
         onFlagContext: ({ id, line }) =>
           setFlags((fs) => fs.map((f) => (f.id === id ? { ...f, contextAfter: [...f.contextAfter, line] } : f))),
         onFlagsResolved: ({ ids, resolution }) =>
           setFlags((fs) => fs.map((f) => (ids.includes(f.id) ? { ...f, status: "reviewed", resolution } : f))),
-        onRaid: ({ raid, alert }) => {
+        onRaid: ({ raid, alert, sound }) => {
           setRaids((rs) => (rs.some((r) => r.id === raid.id) ? rs : [raid, ...rs].slice(0, MAX_RAIDS)));
-          if (alert && settingsRef.current?.playSounds) playTone("raid");
+          if (sound ?? (alert && settingsRef.current?.playSounds)) playTone("raid");
         },
         onRaidMode: setRaidModes,
         onChat: (batch) =>
@@ -114,10 +123,12 @@ export default function App() {
           setActionCount((n) => n + 1);
           if (a.ok && SANCTION_ACTIONS.has(a.action)) setSanctions((s) => (s.some((x) => x.id === a.id) ? s : [a, ...s]));
         },
-        onWave: ({ wave, new: isNew }) => {
+        onWave: ({ wave, new: isNew, sound }) => {
           setWaves((ws) => [wave, ...ws.filter((w) => w.id !== wave.id)].sort((a, b) => b.lastSeen - a.lastSeen));
-          if (isNew && settingsRef.current?.playSounds) playTone("raid");
+          if (sound ?? (isNew && settingsRef.current?.playSounds)) playTone("raid");
         },
+        onModLog: (e) => setModLog((l) => (l.some((x) => x.id === e.id) ? l : [e, ...l].slice(0, MAX_FEED))),
+        onActivity: (a) => setActivity((l) => (l.some((x) => x.id === a.id) ? l : [a, ...l].slice(0, MAX_FEED))),
         onAccountAges: (a) => setAges((prev) => ({ ...prev, ...a })),
         onMessageDeleted: ({ messageId }) => setDeleted((d) => new Set(d).add(messageId)),
         onInboxStatus: ({ connected }) => setInboxConnected(connected),
@@ -142,6 +153,8 @@ export default function App() {
         setRaidModes(snap.raidModes);
         setWaves(snap.waves);
         setSanctions(snap.sanctions);
+        api.modLog(MAX_FEED).then(setModLog).catch(() => {});
+        api.activity(MAX_FEED).then(setActivity).catch(() => {});
         setLoaded(true);
         // Account ages for open flags; unknown ones arrive later as events.
         const logins = [...new Set(snap.flags.filter((f) => f.status === "open").map((f) => f.userLogin))];
@@ -266,6 +279,20 @@ export default function App() {
   };
 
   const byLogin = useMemo(() => indexSanctions(sanctions), [sanctions]);
+
+  async function shoutout(raid: Raid) {
+    try {
+      const r = await api.shoutout(raid.id);
+      setRaids((rs) => rs.map((x) => (x.id === r.raid.id ? r.raid : x)));
+      const parts: string[] = [];
+      parts.push(r.native ? `Shoutout failed: ${r.native}` : `Shouted out ${raid.fromDisplayName} in #${raid.channel}`);
+      if (r.messageSent) parts.push(`sent “${r.messageSent}”`);
+      if (r.messageError) parts.push(`chat message failed: ${r.messageError}`);
+      toast(parts.join(" · "), r.native || r.messageError ? "error" : "ok");
+    } catch (e) {
+      toast(String(e), "error");
+    }
+  }
   const openWaves = waves.filter((w) => w.status === "open").length;
 
   const openUser = useCallback((channel: string, login: string) => setUserPanel({ channel, login }), []);
@@ -283,6 +310,8 @@ export default function App() {
   const tabs: { id: Tab; label: string; count?: number }[] = [
     { id: "flags", label: "Flags", count: openFlagTotal + openWaves },
     { id: "chat", label: "Live chat" },
+    { id: "activity", label: "Activity" },
+    { id: "modlog", label: "Mod log" },
     { id: "raids", label: "Raids", count: unackedRaids },
     { id: "rules", label: "Rules" },
     { id: "tuning", label: "Tuning" },
@@ -311,13 +340,25 @@ export default function App() {
           });
         }}
         onToggleMute={async (name, muted) => setChannels(await api.setChannelMuted(name, muted))}
+        onAlerts={async (name, level, sound) => setChannels(await api.setChannelAlerts(name, level, sound))}
+        onColor={async (name, color) => {
+          try {
+            setChannels(await api.setChannelColor(name, color));
+          } catch (e) {
+            toast(String(e), "error");
+          }
+        }}
+        onShoutoutMessage={async (name, message) => {
+          setChannels(await api.setShoutoutMessage(name, message));
+          toast(message.trim() ? `Shoutout message saved for #${name}` : `Shoutout message removed for #${name}`, "ok");
+        }}
         onRaidMode={async (name, minutes) => setRaidModes(await api.setRaidMode(name, minutes))}
         onLogout={async () => setAuth(await api.logout())}
         inboxConnected={inboxConnected}
       />
 
       <main className="main">
-        <RaidBanner raids={raids} onDismiss={ackRaids} />
+        <RaidBanner raids={raids} onDismiss={ackRaids} onShoutout={shoutout} />
         <nav className="tabs">
           {tabs.map((t) => (
             <button
@@ -362,7 +403,9 @@ export default function App() {
               deleted={deleted}
             />
           )}
-          {tab === "raids" && <RaidLog raids={raids} channelFilter={selected} now={now} />}
+          {tab === "raids" && <RaidLog raids={raids} channelFilter={selected} now={now} onShoutout={shoutout} />}
+          {tab === "activity" && <ActivityFeed items={activity} channelFilter={selected} now={now} />}
+          {tab === "modlog" && <ModLog entries={modLog} channelFilter={selected} now={now} onOpenUser={openUser} />}
           {tab === "rules" && <Rules rules={rules} channels={channels} onRulesChanged={setRules} editRuleId={editRuleId} />}
           {tab === "tuning" && (
             <Tuning

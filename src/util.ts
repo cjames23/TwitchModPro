@@ -1,8 +1,22 @@
 import type { ReactNode } from "react";
 import { createElement } from "react";
 
-/** A stable color for each channel so tags are easy to tell apart. */
+/** Distinct tag colors; the backend hands these out in order so channels don't share one. */
+export const CHANNEL_PALETTE = [
+  "#4dabf7", "#ff8787", "#69db7c", "#ffd43b", "#b197fc", "#ffa94d",
+  "#3bc9db", "#f783ac", "#a9e34b", "#e599f7", "#74c0fc", "#ffc078",
+];
+
+let assigned: Record<string, string> = {};
+
+/** Called whenever the channel list changes. */
+export function setChannelColors(channels: { name: string; color: string | null }[]) {
+  assigned = Object.fromEntries(channels.filter((c) => c.color).map((c) => [c.name, c.color!]));
+}
+
+/** The channel's chosen color (falls back to a name-based color for channels no longer monitored). */
 export function channelColor(name: string): string {
+  if (assigned[name]) return assigned[name];
   let h = 0;
   for (const c of name) h = (h * 31 + c.charCodeAt(0)) >>> 0;
   return `hsl(${h % 360} 70% 62%)`;

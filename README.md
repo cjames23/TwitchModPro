@@ -56,6 +56,16 @@ Built with [Tauri 2](https://tauri.app) (Rust backend) and React + TypeScript.
   - quick exception phrases
 
   Cleared flags are archived instead of deleted, so they still count, and tuning data is kept for 30 days.
+- **Per-channel settings** (⚙ next to each channel):
+  - **color:** channels get distinct colors from a 12-color palette, or you can pick any color
+  - **alert level:** my default / everything / medium+ / high only / off (queue only)
+  - **sound** on or off
+  - **shoutout chat message**
+
+  Each rule can also **always** or **never** alert, regardless of the channel's level.
+- **Shoutouts.** A 📣 Shoutout button on raid alerts and in the raid log sends Twitch's native `/shoutout`, plus an optional per-channel chat message such as `!so @{raider}`.
+- **Mod log.** Every mod action in your channels, by any moderator, as Twitch reports it live. You can filter by type and by mod.
+- **Activity feed.** Follows, subs, resubs, gift subs, bits and announcements across your channels.
 - **Raid alerts and raid mode.** A banner and notification show which channel was raided, by whom, and with how many viewers. Raid mode turns on automatically for a few minutes after a raid (configurable), and you can start or end it by hand with ⚡ in the sidebar.
 - **Live chat.** One column per channel, with flagged lines highlighted. Click a name to open the user panel.
 - **Alerts.**
@@ -66,6 +76,10 @@ Built with [Tauri 2](https://tauri.app) (Rust backend) and React + TypeScript.
   - a per-channel cooldown
 
 Data is stored locally in SQLite under the OS app-data folder (`~/Library/Application Support/com.twitchmodpro.app/` on macOS). Login tokens are kept in the OS keychain, never in the database.
+
+## What Twitch doesn't allow
+
+The app signs in as a moderator, so some Mod View panels can't be offered by any third-party tool. Predictions, the channel point reward queue, polls and hype trains need permissions that Twitch only grants to the broadcaster's own login. Shoutouts, the mod log and the activity feed also come with Twitch-imposed limits. **[docs/twitch-limitations.md](docs/twitch-limitations.md)** explains each one and why.
 
 ## First-time setup: Twitch Client ID
 
@@ -83,7 +97,7 @@ To ship a build with your Client ID baked in, so users skip this step, set it at
 TWITCH_CLIENT_ID=your_client_id npm run tauri build
 ```
 
-Scopes requested: `user:read:moderated_channels`, `moderator:manage:chat_messages`, `moderator:manage:banned_users`, `moderator:manage:warnings`, `moderator:manage:automod`, `moderator:manage:unban_requests`, `moderator:read:suspicious_users`. If you logged in before these were added, the app asks you to log in again.
+Scopes requested (all moderator-level; see [docs/twitch-limitations.md](docs/twitch-limitations.md) for what each is for): `user:read:moderated_channels`, `moderator:manage:chat_messages`, `moderator:manage:banned_users`, `moderator:manage:warnings`, `moderator:manage:automod`, `moderator:manage:unban_requests`, `moderator:read:suspicious_users`, `moderator:manage:shoutouts`, `user:write:chat`, `moderator:read:followers`, `moderator:read:blocked_terms`, `moderator:read:chat_settings`, `moderator:read:moderators`, `moderator:read:vips`. If you logged in before some of these were added, the app asks you to log in again.
 
 ## Running it
 
@@ -117,6 +131,7 @@ src-tauri/src/
   intel.rs       Account ages, other mods' actions, waves, inbox, ban-everywhere, bulk actions
   normalize.rs   Anti-evasion text normalization, with mapping back to the original text
   packs.rs       Default rule packs (parasocial, sexual content, harassment, wellbeing)
+  alerts.rs      When flags alert: channel alert levels and per-rule overrides
   rules.rs       Rules engine (keywords, regex, links, caps, spam, repeats, first message)
   db.rs          SQLite storage and migrations: channels, rules, flags, raids, mod actions, settings
   core.rs        Session, mod-verified channels, chat processing, raid mode, user history, actions

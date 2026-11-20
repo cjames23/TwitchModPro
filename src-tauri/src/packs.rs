@@ -29,6 +29,7 @@ pub fn base(name: &str, kind: RuleKind, severity: Severity) -> Rule {
         mode: RuleMode::Active,
         wellbeing: false,
         pack: None,
+        alert: Default::default(),
     }
 }
 

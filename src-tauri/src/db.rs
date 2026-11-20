@@ -1,5 +1,6 @@
 //! SQLite storage for channels, rules, flags, raids and settings.
 
+use crate::alerts::ChannelAlertLevel;
 use crate::irc::RaidNotice;
 use crate::rules::{Rule, RuleKind, RuleMatch, Severity};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -16,11 +17,50 @@ fn err(e: impl std::fmt::Display) -> String {
 #[serde(rename_all = "camelCase")]
 pub struct Channel {
     pub name: String,
+    /// True when alerts are off for this channel (kept for the quick bell toggle).
     pub muted: bool,
     /// Twitch ID of the channel, known once mod status has been verified.
     pub broadcaster_id: Option<String>,
     /// Whether the logged-in user moderates this channel (as of the last check).
     pub is_mod: bool,
+    pub alert_level: ChannelAlertLevel,
+    /// Play sounds for this channel's alerts.
+    pub sound: bool,
+    /// Tag color, e.g. "#4dabf7".
+    pub color: Option<String>,
+    /// Optional chat message sent with a shoutout, e.g. "!so @{raider}".
+    pub shoutout_message: String,
+}
+
+/// Distinct tag colors, handed out in order so channels don't share one.
+pub const CHANNEL_PALETTE: &[&str] = &[
+    "#4dabf7", "#ff8787", "#69db7c", "#ffd43b", "#b197fc", "#ffa94d", "#3bc9db", "#f783ac", "#a9e34b", "#e599f7", "#74c0fc",
+    "#ffc078",
+];
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModLogEntry {
+    pub id: i64,
+    pub channel: String,
+    pub moderator: String,
+    pub action: String,
+    pub target_login: Option<String>,
+    pub summary: String,
+    pub timestamp: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Activity {
+    pub id: i64,
+    pub channel: String,
+    /// "follow", "sub", "resub", "subgift", "giftbomb", "upgrade", "bits", "announcement", "other"
+    pub kind: String,
+    pub user_login: String,
+    pub display_name: String,
+    pub text: String,
+    pub timestamp: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -113,6 +153,11 @@ pub struct Raid {
     pub viewers: i64,
     pub timestamp: i64,
     pub acknowledged: bool,
+    #[serde(default)]
+    pub from_user_id: Option<String>,
+    /// When you sent a shoutout for this raid, if you did.
+    #[serde(default)]
+    pub shoutout_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -348,6 +393,43 @@ impl Db {
                 )
                 .map_err(err)?;
         }
+        if version < 5 {
+            self.conn
+                .execute_batch(
+                    "BEGIN;
+                     ALTER TABLE channels ADD COLUMN alert_level TEXT NOT NULL DEFAULT 'default';
+                     ALTER TABLE channels ADD COLUMN sound INTEGER NOT NULL DEFAULT 1;
+                     ALTER TABLE channels ADD COLUMN color TEXT;
+                     ALTER TABLE channels ADD COLUMN shoutout_message TEXT NOT NULL DEFAULT '';
+                     UPDATE channels SET alert_level = 'off' WHERE muted = 1;
+                     ALTER TABLE raids ADD COLUMN from_user_id TEXT;
+                     ALTER TABLE raids ADD COLUMN shoutout_at INTEGER;
+                     CREATE TABLE IF NOT EXISTS mod_log (
+                         id INTEGER PRIMARY KEY AUTOINCREMENT,
+                         channel TEXT NOT NULL,
+                         moderator TEXT NOT NULL,
+                         action TEXT NOT NULL,
+                         target_login TEXT,
+                         summary TEXT NOT NULL,
+                         ts INTEGER NOT NULL
+                     );
+                     CREATE INDEX IF NOT EXISTS mod_log_ts ON mod_log(ts);
+                     CREATE TABLE IF NOT EXISTS activity (
+                         id INTEGER PRIMARY KEY AUTOINCREMENT,
+                         channel TEXT NOT NULL,
+                         kind TEXT NOT NULL,
+                         user_login TEXT NOT NULL,
+                         display_name TEXT NOT NULL,
+                         text TEXT NOT NULL,
+                         ts INTEGER NOT NULL
+                     );
+                     CREATE INDEX IF NOT EXISTS activity_ts ON activity(ts);
+                     PRAGMA user_version = 5;
+                     COMMIT;",
+                )
+                .map_err(err)?;
+        }
+        self.assign_missing_colors()?;
         Ok(())
     }
 
@@ -431,15 +513,23 @@ impl Db {
     pub fn channels(&self) -> DbResult<Vec<Channel>> {
         let mut stmt = self
             .conn
-            .prepare("SELECT name, muted, broadcaster_id, is_mod FROM channels ORDER BY added_at")
+            .prepare(
+                "SELECT name, broadcaster_id, is_mod, alert_level, sound, color, shoutout_message
+                 FROM channels ORDER BY added_at",
+            )
             .map_err(err)?;
         let rows = stmt
             .query_map([], |r| {
+                let level = ChannelAlertLevel::parse(&r.get::<_, String>(3)?);
                 Ok(Channel {
                     name: r.get(0)?,
-                    muted: r.get::<_, i64>(1)? != 0,
-                    broadcaster_id: r.get(2)?,
-                    is_mod: r.get::<_, i64>(3)? != 0,
+                    muted: level == ChannelAlertLevel::Off,
+                    broadcaster_id: r.get(1)?,
+                    is_mod: r.get::<_, i64>(2)? != 0,
+                    alert_level: level,
+                    sound: r.get::<_, i64>(4)? != 0,
+                    color: r.get(5)?,
+                    shoutout_message: r.get(6)?,
                 })
             })
             .map_err(err)?;
@@ -454,7 +544,78 @@ impl Db {
                 params![name, now, broadcaster_id],
             )
             .map_err(err)?;
+        self.assign_missing_colors()?;
         Ok(())
+    }
+
+    /// Give every channel without a color the first palette color not already used.
+    fn assign_missing_colors(&self) -> DbResult<()> {
+        let rows: Vec<(String, Option<String>)> = {
+            let mut stmt = self.conn.prepare("SELECT name, color FROM channels ORDER BY added_at").map_err(err)?;
+            let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).map_err(err)?;
+            rows.collect::<Result<_, _>>().map_err(err)?
+        };
+        let mut used: Vec<String> = rows.iter().filter_map(|(_, c)| c.clone()).collect();
+        for (name, color) in rows {
+            if color.is_some() {
+                continue;
+            }
+            let pick = CHANNEL_PALETTE
+                .iter()
+                .find(|c| !used.iter().any(|u| u.eq_ignore_ascii_case(c)))
+                .copied()
+                // More channels than colors: reuse the least-used one.
+                .unwrap_or_else(|| {
+                    *CHANNEL_PALETTE
+                        .iter()
+                        .min_by_key(|c| used.iter().filter(|u| u.eq_ignore_ascii_case(c)).count())
+                        .unwrap()
+                });
+            self.conn
+                .execute("UPDATE channels SET color = ?2 WHERE name = ?1", params![name, pick])
+                .map_err(err)?;
+            used.push(pick.to_string());
+        }
+        Ok(())
+    }
+
+    pub fn set_channel_alerts(&self, name: &str, level: ChannelAlertLevel, sound: bool) -> DbResult<()> {
+        self.conn
+            .execute(
+                "UPDATE channels SET alert_level = ?2, sound = ?3, muted = ?4 WHERE name = ?1",
+                params![name, level.as_str(), sound as i64, (level == ChannelAlertLevel::Off) as i64],
+            )
+            .map_err(err)?;
+        Ok(())
+    }
+
+    /// Set a channel's color, or pick a fresh one from the palette when `color` is None.
+    pub fn set_channel_color(&self, name: &str, color: Option<&str>) -> DbResult<()> {
+        if let Some(c) = color {
+            let valid = c.len() == 7 && c.starts_with('#') && c[1..].chars().all(|x| x.is_ascii_hexdigit());
+            if !valid {
+                return Err("Colors look like #4dabf7.".into());
+            }
+        }
+        self.conn.execute("UPDATE channels SET color = ?2 WHERE name = ?1", params![name, color]).map_err(err)?;
+        self.assign_missing_colors()
+    }
+
+    pub fn set_shoutout_message(&self, name: &str, message: &str) -> DbResult<()> {
+        let message: String = message.trim().chars().take(400).collect();
+        self.conn
+            .execute("UPDATE channels SET shoutout_message = ?2 WHERE name = ?1", params![name, message])
+            .map_err(err)?;
+        Ok(())
+    }
+
+    /// The channel's alert level and whether its alerts play a sound.
+    pub fn channel_alerts(&self, name: &str) -> (ChannelAlertLevel, bool) {
+        self.conn
+            .query_row("SELECT alert_level, sound FROM channels WHERE name = ?1", params![name], |r| {
+                Ok((ChannelAlertLevel::parse(&r.get::<_, String>(0)?), r.get::<_, i64>(1)? != 0))
+            })
+            .unwrap_or((ChannelAlertLevel::Default, true))
     }
 
     /// Record whether the user moderates `name`, as reported by Twitch.
@@ -480,18 +641,16 @@ impl Db {
         Ok(())
     }
 
+    /// The quick bell toggle: alerts off, or back to the default level.
     pub fn set_channel_muted(&self, name: &str, muted: bool) -> DbResult<()> {
-        self.conn
-            .execute("UPDATE channels SET muted = ?2 WHERE name = ?1", params![name, muted as i64])
-            .map_err(err)?;
-        Ok(())
+        let (_, sound) = self.channel_alerts(name);
+        let level = if muted { ChannelAlertLevel::Off } else { ChannelAlertLevel::Default };
+        self.set_channel_alerts(name, level, sound)
     }
 
+    #[cfg(test)]
     pub fn is_muted(&self, name: &str) -> bool {
-        self.conn
-            .query_row("SELECT muted FROM channels WHERE name = ?1", params![name], |r| r.get::<_, i64>(0))
-            .map(|m| m != 0)
-            .unwrap_or(false)
+        self.channel_alerts(name).0 == ChannelAlertLevel::Off
     }
 
     // ---- rules ----
@@ -830,8 +989,8 @@ impl Db {
     pub fn insert_raid(&self, raid: &RaidNotice) -> DbResult<Raid> {
         self.conn
             .execute(
-                "INSERT INTO raids (channel, from_login, from_display_name, viewers, ts) VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![raid.channel, raid.from_login, raid.from_display_name, raid.viewers, raid.timestamp],
+                "INSERT INTO raids (channel, from_login, from_display_name, viewers, ts, from_user_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![raid.channel, raid.from_login, raid.from_display_name, raid.viewers, raid.timestamp, raid.from_user_id],
             )
             .map_err(err)?;
         Ok(Raid {
@@ -842,19 +1001,34 @@ impl Db {
             viewers: raid.viewers,
             timestamp: raid.timestamp,
             acknowledged: false,
+            from_user_id: raid.from_user_id.clone(),
+            shoutout_at: None,
         })
     }
 
     pub fn raids(&self, limit: i64) -> DbResult<Vec<Raid>> {
+        self.query_raids("1 = 1", params![limit])
+    }
+
+    pub fn raid_by_id(&self, id: i64) -> DbResult<Option<Raid>> {
+        Ok(self.query_raids("id = ?2", params![1, id])?.into_iter().next())
+    }
+
+    pub fn set_raid_shoutout(&self, id: i64, ts: i64) -> DbResult<()> {
+        self.conn.execute("UPDATE raids SET shoutout_at = ?2 WHERE id = ?1", params![id, ts]).map_err(err)?;
+        Ok(())
+    }
+
+    fn query_raids(&self, filter: &str, args: impl rusqlite::Params) -> DbResult<Vec<Raid>> {
         let mut stmt = self
             .conn
-            .prepare(
-                "SELECT id, channel, from_login, from_display_name, viewers, ts, acknowledged
-                 FROM raids ORDER BY ts DESC, id DESC LIMIT ?1",
-            )
+            .prepare(&format!(
+                "SELECT id, channel, from_login, from_display_name, viewers, ts, acknowledged, from_user_id, shoutout_at
+                 FROM raids WHERE {filter} ORDER BY ts DESC, id DESC LIMIT ?1"
+            ))
             .map_err(err)?;
         let rows = stmt
-            .query_map(params![limit], |r| {
+            .query_map(args, |r| {
                 Ok(Raid {
                     id: r.get(0)?,
                     channel: r.get(1)?,
@@ -863,10 +1037,85 @@ impl Db {
                     viewers: r.get(4)?,
                     timestamp: r.get(5)?,
                     acknowledged: r.get::<_, i64>(6)? != 0,
+                    from_user_id: r.get(7)?,
+                    shoutout_at: r.get(8)?,
                 })
             })
             .map_err(err)?;
         rows.collect::<Result<_, _>>().map_err(err)
+    }
+
+    // ---- mod log & activity ----
+
+    pub fn insert_mod_log(&self, e: &ModLogEntry) -> DbResult<ModLogEntry> {
+        self.conn
+            .execute(
+                "INSERT INTO mod_log (channel, moderator, action, target_login, summary, ts) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![e.channel, e.moderator, e.action, e.target_login, e.summary, e.timestamp],
+            )
+            .map_err(err)?;
+        Ok(ModLogEntry { id: self.conn.last_insert_rowid(), ..e.clone() })
+    }
+
+    pub fn mod_log(&self, limit: i64) -> DbResult<Vec<ModLogEntry>> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT id, channel, moderator, action, target_login, summary, ts FROM mod_log ORDER BY ts DESC, id DESC LIMIT ?1",
+            )
+            .map_err(err)?;
+        let rows = stmt
+            .query_map(params![limit], |r| {
+                Ok(ModLogEntry {
+                    id: r.get(0)?,
+                    channel: r.get(1)?,
+                    moderator: r.get(2)?,
+                    action: r.get(3)?,
+                    target_login: r.get(4)?,
+                    summary: r.get(5)?,
+                    timestamp: r.get(6)?,
+                })
+            })
+            .map_err(err)?;
+        rows.collect::<Result<_, _>>().map_err(err)
+    }
+
+    pub fn insert_activity(&self, a: &Activity) -> DbResult<Activity> {
+        self.conn
+            .execute(
+                "INSERT INTO activity (channel, kind, user_login, display_name, text, ts) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![a.channel, a.kind, a.user_login, a.display_name, a.text, a.timestamp],
+            )
+            .map_err(err)?;
+        Ok(Activity { id: self.conn.last_insert_rowid(), ..a.clone() })
+    }
+
+    pub fn activity(&self, limit: i64) -> DbResult<Vec<Activity>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, channel, kind, user_login, display_name, text, ts FROM activity ORDER BY ts DESC, id DESC LIMIT ?1")
+            .map_err(err)?;
+        let rows = stmt
+            .query_map(params![limit], |r| {
+                Ok(Activity {
+                    id: r.get(0)?,
+                    channel: r.get(1)?,
+                    kind: r.get(2)?,
+                    user_login: r.get(3)?,
+                    display_name: r.get(4)?,
+                    text: r.get(5)?,
+                    timestamp: r.get(6)?,
+                })
+            })
+            .map_err(err)?;
+        rows.collect::<Result<_, _>>().map_err(err)
+    }
+
+    /// Drop mod log and activity older than `before_ms`.
+    pub fn prune_feeds(&self, before_ms: i64) -> DbResult<()> {
+        self.conn.execute("DELETE FROM mod_log WHERE ts < ?1", params![before_ms]).map_err(err)?;
+        self.conn.execute("DELETE FROM activity WHERE ts < ?1", params![before_ms]).map_err(err)?;
+        Ok(())
     }
 
     pub fn ack_raids(&self) -> DbResult<()> {
@@ -1089,6 +1338,10 @@ mod tests {
         let chans = db.channels().unwrap();
         assert_eq!(chans.len(), 1);
         assert!(chans[0].muted && chans[0].is_mod && db.is_muted("streamer"));
+        assert_eq!(chans[0].alert_level, ChannelAlertLevel::Off);
+        db.set_channel_alerts("streamer", ChannelAlertLevel::High, false).unwrap();
+        assert_eq!(db.channel_alerts("streamer"), (ChannelAlertLevel::High, false));
+        assert!(!db.is_muted("streamer"));
         assert_eq!(db.broadcaster_id("streamer").as_deref(), Some("42"));
         db.set_channel_mod_status("streamer", None, false).unwrap();
         let c = &db.channels().unwrap()[0];
@@ -1102,6 +1355,52 @@ mod tests {
         assert_eq!(db.rules().unwrap()[0].name, "renamed");
         db.delete_rule(rule.id).unwrap();
         assert_eq!(db.rules().unwrap().len(), before - 1);
+    }
+
+    #[test]
+    fn channels_get_distinct_colors() {
+        let db = Db::open_in_memory().unwrap();
+        for (i, name) in ["kitdy", "panda", "third"].iter().enumerate() {
+            db.add_channel(name, &i.to_string(), i as i64).unwrap();
+        }
+        let colors: Vec<String> = db.channels().unwrap().into_iter().map(|c| c.color.unwrap()).collect();
+        assert_eq!(colors, CHANNEL_PALETTE[..3].to_vec());
+        db.set_channel_color("panda", Some("#123456")).unwrap();
+        assert!(db.set_channel_color("panda", Some("red")).is_err());
+        db.add_channel("fourth", "9", 9).unwrap();
+        // The freed-up second palette color goes to the new channel.
+        assert_eq!(db.channels().unwrap()[3].color.as_deref(), Some(CHANNEL_PALETTE[1]));
+        db.set_shoutout_message("kitdy", "  !so @{raider}  ").unwrap();
+        assert_eq!(db.channels().unwrap()[0].shoutout_message, "!so @{raider}");
+    }
+
+    #[test]
+    fn mod_log_and_activity_round_trip() {
+        let db = Db::open_in_memory().unwrap();
+        db.insert_mod_log(&ModLogEntry {
+            id: 0,
+            channel: "c".into(),
+            moderator: "m".into(),
+            action: "ban".into(),
+            target_login: Some("u".into()),
+            summary: "banned u".into(),
+            timestamp: 5,
+        })
+        .unwrap();
+        db.insert_activity(&Activity {
+            id: 0,
+            channel: "c".into(),
+            kind: "sub".into(),
+            user_login: "u".into(),
+            display_name: "U".into(),
+            text: "subscribed".into(),
+            timestamp: 6,
+        })
+        .unwrap();
+        assert_eq!(db.mod_log(10).unwrap()[0].summary, "banned u");
+        assert_eq!(db.activity(10).unwrap()[0].kind, "sub");
+        db.prune_feeds(10).unwrap();
+        assert!(db.mod_log(10).unwrap().is_empty() && db.activity(10).unwrap().is_empty());
     }
 
     #[test]
@@ -1152,10 +1451,15 @@ mod tests {
             channel: "c".into(),
             from_login: "r".into(),
             from_display_name: "R".into(),
+            from_user_id: Some("77".into()),
             viewers: 10,
             timestamp: 1,
         })
         .unwrap();
+        let raid = db.raids(1).unwrap().remove(0);
+        db.set_raid_shoutout(raid.id, 3).unwrap();
+        let raid = db.raid_by_id(raid.id).unwrap().unwrap();
+        assert_eq!((raid.from_user_id.as_deref(), raid.shoutout_at), (Some("77"), Some(3)));
         db.ack_raids().unwrap();
         assert!(db.raids(10).unwrap()[0].acknowledged);
 

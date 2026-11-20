@@ -160,6 +160,9 @@ pub struct Rule {
     /// Which default pack this came from, if any.
     #[serde(default)]
     pub pack: Option<String>,
+    /// Alert override: follow the channel's level, always alert, or never alert.
+    #[serde(default)]
+    pub alert: crate::alerts::RuleAlert,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -630,6 +633,10 @@ impl RuleEngine {
         }
     }
 
+    pub fn alert_of(&self, rule_id: i64) -> crate::alerts::RuleAlert {
+        self.rules.iter().find(|c| c.rule.id == rule_id).map(|c| c.rule.alert).unwrap_or_default()
+    }
+
     pub fn kind_of(&self, rule_id: i64) -> Option<RuleKind> {
         self.rules.iter().find(|c| c.rule.id == rule_id).map(|c| c.rule.kind)
     }
@@ -844,6 +851,7 @@ mod tests {
             mode: RuleMode::Active,
             wellbeing: false,
             pack: None,
+            alert: Default::default(),
         }
     }
 

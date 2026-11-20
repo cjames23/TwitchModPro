@@ -19,6 +19,8 @@ pub const SUBSCRIPTIONS: &[(&str, &str)] = &[
     ("channel.unban_request.create", "1"),
     ("channel.unban_request.resolve", "1"),
     ("channel.suspicious_user.message", "1"),
+    ("channel.moderate", "2"),
+    ("channel.follow", "2"),
 ];
 
 #[derive(Debug, Clone)]
@@ -100,6 +102,8 @@ async fn subscribe_channel(helix: &Helix, session: &str, broadcaster_id: &str, s
                 let label = match *kind {
                     k if k.starts_with("automod") => "the AutoMod inbox",
                     k if k.contains("unban_request") => "unban requests",
+                    "channel.moderate" => "the mod log",
+                    "channel.follow" => "follows in the activity feed",
                     _ => "suspicious-user alerts",
                 };
                 if !failed.iter().any(|f| f == label) {

@@ -157,6 +157,42 @@ pub fn set_channel_muted(state: State<AppState>, name: String, muted: bool) -> R
 }
 
 #[tauri::command]
+pub fn set_channel_alerts(state: State<AppState>, name: String, level: String, sound: bool) -> Result<Vec<Channel>, String> {
+    let db = state.core.db.lock().unwrap();
+    db.set_channel_alerts(&name, crate::alerts::ChannelAlertLevel::parse(&level), sound)?;
+    db.channels()
+}
+
+#[tauri::command]
+pub fn set_channel_color(state: State<AppState>, name: String, color: Option<String>) -> Result<Vec<Channel>, String> {
+    let db = state.core.db.lock().unwrap();
+    db.set_channel_color(&name, color.as_deref())?;
+    db.channels()
+}
+
+#[tauri::command]
+pub fn set_shoutout_message(state: State<AppState>, name: String, message: String) -> Result<Vec<Channel>, String> {
+    let db = state.core.db.lock().unwrap();
+    db.set_shoutout_message(&name, &message)?;
+    db.channels()
+}
+
+#[tauri::command]
+pub async fn shoutout(state: State<'_, AppState>, raid_id: i64) -> Result<crate::core::ShoutoutResult, String> {
+    state.core.shoutout(raid_id).await
+}
+
+#[tauri::command]
+pub fn get_mod_log(state: State<AppState>, limit: i64) -> Result<Vec<crate::db::ModLogEntry>, String> {
+    state.core.db.lock().unwrap().mod_log(limit.clamp(1, 2_000))
+}
+
+#[tauri::command]
+pub fn get_activity(state: State<AppState>, limit: i64) -> Result<Vec<crate::db::Activity>, String> {
+    state.core.db.lock().unwrap().activity(limit.clamp(1, 2_000))
+}
+
+#[tauri::command]
 pub fn set_raid_mode(state: State<AppState>, channel: String, minutes: i64) -> HashMap<String, i64> {
     state.core.set_raid_mode(&channel, minutes.clamp(0, 24 * 60))
 }

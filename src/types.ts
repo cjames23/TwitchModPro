@@ -4,11 +4,37 @@ export type FlagKind = "rule" | "automod" | "unbanRequest" | "suspicious";
 export type FlagStatus = "open" | "reviewed" | "dismissed";
 export type ConnStatus = "connecting" | "connected" | "disconnected";
 
+export type AlertLevel = "default" | "all" | "medium" | "high" | "off";
+
 export interface Channel {
   name: string;
   muted: boolean;
   broadcasterId: string | null;
   isMod: boolean;
+  alertLevel: AlertLevel;
+  sound: boolean;
+  color: string | null;
+  shoutoutMessage: string;
+}
+
+export interface ModLogEntry {
+  id: number;
+  channel: string;
+  moderator: string;
+  action: string;
+  targetLogin: string | null;
+  summary: string;
+  timestamp: number;
+}
+
+export interface Activity {
+  id: number;
+  channel: string;
+  kind: "follow" | "sub" | "resub" | "subgift" | "giftbomb" | "upgrade" | "bits" | "announcement" | "other";
+  userLogin: string;
+  displayName: string;
+  text: string;
+  timestamp: number;
 }
 
 export interface RuleParams {
@@ -47,6 +73,7 @@ export interface Rule {
   mode: "active" | "test";
   wellbeing: boolean;
   pack: string | null;
+  alert: "default" | "always" | "never";
 }
 
 export interface RuleMatch {
@@ -134,6 +161,15 @@ export interface Raid {
   viewers: number;
   timestamp: number;
   acknowledged: boolean;
+  fromUserId: string | null;
+  shoutoutAt: number | null;
+}
+
+export interface ShoutoutResult {
+  native: string | null;
+  messageSent: string | null;
+  messageError: string | null;
+  raid: Raid;
 }
 
 export interface LadderStep {

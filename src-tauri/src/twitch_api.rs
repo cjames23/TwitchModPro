@@ -8,6 +8,8 @@ use tokio::sync::Mutex;
 /// - list the channels you moderate (to restrict which channels can be added)
 /// - delete messages; timeout / ban / unban; warn
 /// - AutoMod held messages, unban requests and suspicious-user messages for the inbox
+/// - shoutouts, and sending the optional shoutout chat message as you
+/// - the mod log (`channel.moderate` needs all the moderator:read scopes below) and follows
 pub const SCOPES: &[&str] = &[
     "user:read:moderated_channels",
     "moderator:manage:chat_messages",
@@ -16,6 +18,13 @@ pub const SCOPES: &[&str] = &[
     "moderator:manage:automod",
     "moderator:manage:unban_requests",
     "moderator:read:suspicious_users",
+    "moderator:manage:shoutouts",
+    "user:write:chat",
+    "moderator:read:followers",
+    "moderator:read:blocked_terms",
+    "moderator:read:chat_settings",
+    "moderator:read:moderators",
+    "moderator:read:vips",
 ];
 
 /// Parse Twitch's RFC 3339 timestamps (`2016-12-14T20:32:28Z`, optional fraction) to Unix ms.
@@ -608,6 +617,52 @@ impl Helix {
         self.expect_ok(resp).await.map(|_| ())
     }
 
+    /// Twitch's native shoutout. Twitch only allows it while the channel is live, once every
+    /// 2 minutes per channel, and once an hour for the same streamer.
+    pub async fn shoutout(&self, from_broadcaster_id: &str, to_broadcaster_id: &str) -> Result<(), ApiError> {
+        let q = [
+            ("from_broadcaster_id", from_broadcaster_id.to_string()),
+            ("to_broadcaster_id", to_broadcaster_id.to_string()),
+            ("moderator_id", self.account.user_id.clone()),
+        ];
+        let resp = self.send(|http, base| http.post(format!("{base}/chat/shoutouts")).query(&q)).await?;
+        if resp.status().as_u16() == 429 {
+            return Err(ApiError::Other(
+                "Twitch limits shoutouts to one every 2 minutes per channel, and once an hour per streamer.".into(),
+            ));
+        }
+        self.expect_ok(resp).await.map(|_| ())
+    }
+
+    /// Send a chat message as the logged-in user.
+    pub async fn send_chat_message(&self, broadcaster_id: &str, message: &str) -> Result<(), ApiError> {
+        #[derive(Deserialize)]
+        struct Item {
+            is_sent: bool,
+            #[serde(default)]
+            drop_reason: Option<serde_json::Value>,
+        }
+        #[derive(Deserialize)]
+        struct Resp {
+            data: Vec<Item>,
+        }
+        let body = serde_json::json!({
+            "broadcaster_id": broadcaster_id,
+            "sender_id": self.account.user_id,
+            "message": message.chars().take(500).collect::<String>(),
+        });
+        let resp = self.send(|http, base| http.post(format!("{base}/chat/messages")).json(&body)).await?;
+        let r: Resp = self.expect_ok(resp).await?.json().await?;
+        match r.data.into_iter().next() {
+            Some(i) if i.is_sent => Ok(()),
+            Some(i) => Err(ApiError::Other(format!(
+                "Twitch didn't send the message: {}",
+                i.drop_reason.and_then(|d| d["message"].as_str().map(str::to_string)).unwrap_or_else(|| "no reason given".into())
+            ))),
+            None => Err(ApiError::Other("Twitch didn't send the message.".into())),
+        }
+    }
+
     pub async fn delete_message(&self, broadcaster_id: &str, message_id: &str) -> Result<(), ApiError> {
         let q = [
             ("broadcaster_id", broadcaster_id.to_string()),
@@ -746,6 +801,43 @@ mod tests {
         assert_eq!((reqs[0].id.as_str(), reqs[0].channel.as_str(), reqs[0].text.as_str()), ("r1", "chan", "sorry"));
         h.resolve_unban_request("1", "r1", false, "no").await.unwrap();
         assert_eq!(h.eventsub_subscribe("sess", "automod.message.hold", "2", "1").await.unwrap(), "sub1");
+    }
+
+    #[tokio::test]
+    async fn shoutout_and_chat_message() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/helix/chat/shoutouts"))
+            .and(query_param("from_broadcaster_id", "1"))
+            .and(query_param("to_broadcaster_id", "2"))
+            .and(query_param("moderator_id", "999"))
+            .respond_with(ResponseTemplate::new(204))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/helix/chat/shoutouts"))
+            .respond_with(ResponseTemplate::new(429))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/helix/chat/messages"))
+            .and(body_json(serde_json::json!({"broadcaster_id": "1", "sender_id": "999", "message": "!so @raider"})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"data": [{"message_id": "x", "is_sent": true}]})))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/helix/chat/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": [{"message_id": "", "is_sent": false, "drop_reason": {"code": "msg_duplicate", "message": "Duplicate message"}}]
+            })))
+            .mount(&server)
+            .await;
+        let h = helix(&server, Arc::new(AtomicUsize::new(0)));
+        h.shoutout("1", "2").await.unwrap();
+        assert!(h.shoutout("1", "2").await.unwrap_err().to_string().contains("2 minutes"));
+        h.send_chat_message("1", "!so @raider").await.unwrap();
+        assert!(h.send_chat_message("1", "again").await.unwrap_err().to_string().contains("Duplicate message"));
     }
 
     #[tokio::test]

@@ -21,6 +21,9 @@ import type {
   Wave,
   BulkResult,
   ChannelResult,
+  ShoutoutResult,
+  ModLogEntry,
+  Activity,
 } from "./types";
 
 export const api = {
@@ -39,6 +42,13 @@ export const api = {
   removeChannel: (name: string) => invoke<Channel[]>("remove_channel", { name }),
   setChannelMuted: (name: string, muted: boolean) => invoke<Channel[]>("set_channel_muted", { name, muted }),
   setRaidMode: (channel: string, minutes: number) => invoke<RaidModes>("set_raid_mode", { channel, minutes }),
+  setChannelAlerts: (name: string, level: string, sound: boolean) =>
+    invoke<Channel[]>("set_channel_alerts", { name, level, sound }),
+  setChannelColor: (name: string, color: string | null) => invoke<Channel[]>("set_channel_color", { name, color }),
+  setShoutoutMessage: (name: string, message: string) => invoke<Channel[]>("set_shoutout_message", { name, message }),
+  shoutout: (raidId: number) => invoke<ShoutoutResult>("shoutout", { raidId }),
+  modLog: (limit: number) => invoke<ModLogEntry[]>("get_mod_log", { limit }),
+  activity: (limit: number) => invoke<Activity[]>("get_activity", { limit }),
 
   // rules
   saveRule: (rule: Rule) => invoke<Rule[]>("save_rule", { rule }),
@@ -87,10 +97,10 @@ export const api = {
 };
 
 export interface Handlers {
-  onFlag: (e: { flag: Flag; alert: boolean }) => void;
+  onFlag: (e: { flag: Flag; alert: boolean; sound?: boolean }) => void;
   onFlagContext: (e: { id: number; line: ContextLine }) => void;
   onFlagsResolved: (e: { ids: number[]; resolution: string }) => void;
-  onRaid: (e: { raid: Raid; alert: boolean }) => void;
+  onRaid: (e: { raid: Raid; alert: boolean; sound?: boolean }) => void;
   onRaidMode: (modes: RaidModes) => void;
   onChat: (batch: LiveMessage[]) => void;
   onConnection: (info: ConnectionInfo) => void;
@@ -98,7 +108,9 @@ export interface Handlers {
   onAuth: (auth: AuthState) => void;
   onModAction: (a: ModAction) => void;
   onNotice: (e: { channel: string | null; text: string }) => void;
-  onWave: (e: { wave: Wave; new: boolean }) => void;
+  onWave: (e: { wave: Wave; new: boolean; sound?: boolean }) => void;
+  onModLog: (e: ModLogEntry) => void;
+  onActivity: (e: Activity) => void;
   onAccountAges: (ages: Record<string, number>) => void;
   onMessageDeleted: (e: { channel: string; messageId: string }) => void;
   onInboxStatus: (e: { connected: boolean }) => void;
@@ -106,10 +118,10 @@ export interface Handlers {
 
 export async function subscribe(h: Handlers): Promise<UnlistenFn> {
   const offs = await Promise.all([
-    listen<{ flag: Flag; alert: boolean }>("flag", (e) => h.onFlag(e.payload)),
+    listen<{ flag: Flag; alert: boolean; sound?: boolean }>("flag", (e) => h.onFlag(e.payload)),
     listen<{ id: number; line: ContextLine }>("flag-context", (e) => h.onFlagContext(e.payload)),
     listen<{ ids: number[]; resolution: string }>("flags-resolved", (e) => h.onFlagsResolved(e.payload)),
-    listen<{ raid: Raid; alert: boolean }>("raid", (e) => h.onRaid(e.payload)),
+    listen<{ raid: Raid; alert: boolean; sound?: boolean }>("raid", (e) => h.onRaid(e.payload)),
     listen<RaidModes>("raid-mode", (e) => h.onRaidMode(e.payload)),
     listen<LiveMessage[]>("chat-batch", (e) => h.onChat(e.payload)),
     listen<ConnectionInfo>("connection", (e) => h.onConnection(e.payload)),
@@ -117,7 +129,9 @@ export async function subscribe(h: Handlers): Promise<UnlistenFn> {
     listen<AuthState>("auth", (e) => h.onAuth(e.payload)),
     listen<ModAction>("mod-action", (e) => h.onModAction(e.payload)),
     listen<{ channel: string | null; text: string }>("notice", (e) => h.onNotice(e.payload)),
-    listen<{ wave: Wave; new: boolean }>("wave", (e) => h.onWave(e.payload)),
+    listen<{ wave: Wave; new: boolean; sound?: boolean }>("wave", (e) => h.onWave(e.payload)),
+    listen<ModLogEntry>("mod-log", (e) => h.onModLog(e.payload)),
+    listen<Activity>("activity", (e) => h.onActivity(e.payload)),
     listen<Record<string, number>>("account-ages", (e) => h.onAccountAges(e.payload)),
     listen<{ channel: string; messageId: string }>("message-deleted", (e) => h.onMessageDeleted(e.payload)),
     listen<{ connected: boolean }>("inbox-status", (e) => h.onInboxStatus(e.payload)),

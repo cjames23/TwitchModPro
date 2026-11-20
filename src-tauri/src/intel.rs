@@ -228,9 +228,14 @@ impl Core {
         let changed = self.waves.lock().unwrap().observe(msg, cfg);
         for wave in changed {
             let new = self.wave_notified.lock().unwrap().insert(wave.id);
+            let (alert, sound) = {
+                let db = self.db.lock().unwrap();
+                let levels: Vec<_> = wave.channels.iter().map(|c| db.channel_alerts(c)).collect();
+                let alert = levels.iter().any(|(l, _)| *l != crate::alerts::ChannelAlertLevel::Off);
+                (alert, alert && db.settings().play_sounds && levels.iter().any(|(l, s)| *s && *l != crate::alerts::ChannelAlertLevel::Off))
+            };
             if new {
-                let muted = wave.channels.iter().all(|c| self.db.lock().unwrap().is_muted(c));
-                if !muted && self.should_notify(&format!("wave:{}", wave.key)) {
+                if alert && self.should_notify(&format!("wave:{}", wave.key)) {
                     let chans: Vec<String> = wave.channels.iter().map(|c| format!("#{c}")).collect();
                     self.notify(
                         &format!("Spam wave in {}", chans.join(", ")),
@@ -238,7 +243,7 @@ impl Core {
                     );
                 }
             }
-            let _ = self.app.emit("wave", serde_json::json!({ "wave": wave, "new": new }));
+            let _ = self.app.emit("wave", serde_json::json!({ "wave": wave, "new": new, "sound": new && sound }));
         }
     }
 
@@ -507,6 +512,16 @@ impl Core {
                 };
                 self.resolve_external("unbanRequest", &s(e, "id"), &resolution);
             }
+            "channel.moderate" => self.on_moderate(&channel, e),
+            "channel.follow" => self.add_activity(crate::db::Activity {
+                id: 0,
+                channel,
+                kind: "follow".into(),
+                user_login: s(e, "user_login"),
+                display_name: s(e, "user_name"),
+                text: "followed".into(),
+                timestamp: crate::twitch_api::parse_rfc3339_ms(&s(e, "followed_at")).unwrap_or_else(now_ms),
+            }),
             "channel.suspicious_user.message" => {
                 let login = s(e, "user_login");
                 if self.db.lock().unwrap().open_flag_exists("suspicious", &channel, &login) {
@@ -563,6 +578,51 @@ impl Core {
                 });
             }
             _ => {}
+        }
+    }
+
+    /// Every mod action in the channel, by anyone (from EventSub `channel.moderate`).
+    fn on_moderate(&self, channel: &str, e: &Value) {
+        let action = s(e, "action");
+        let moderator = e["moderator_user_name"].as_str().or(e["moderator_user_login"].as_str()).unwrap_or("A mod").to_string();
+        let (summary, target) = describe_moderation(&action, e);
+        let entry = crate::db::ModLogEntry {
+            id: 0,
+            channel: channel.to_string(),
+            moderator,
+            action: action.clone(),
+            target_login: target.clone(),
+            summary,
+            timestamp: now_ms(),
+        };
+        let saved = {
+            let db = self.db.lock().unwrap();
+            // Warnings by other mods don't show up in chat, so record them here for cross-channel notes.
+            let mod_login = s(e, "moderator_user_login");
+            let me = self.helix().map(|h| h.account.login).unwrap_or_default();
+            if action == "warn" && mod_login != me {
+                if let Some(t) = &target {
+                    if let Ok(a) = db.insert_mod_action(&ModAction {
+                        id: 0,
+                        channel: channel.to_string(),
+                        target_login: t.clone(),
+                        action: "warn".into(),
+                        duration_secs: None,
+                        reason: s(&e["warn"], "reason"),
+                        ok: true,
+                        error: None,
+                        timestamp: now_ms(),
+                        by_app: false,
+                        target_user_id: e["warn"]["user_id"].as_str().map(str::to_string),
+                    }) {
+                        let _ = self.app.emit("mod-action", &a);
+                    }
+                }
+            }
+            db.insert_mod_log(&entry).ok()
+        };
+        if let Some(saved) = saved {
+            let _ = self.app.emit("mod-log", &saved);
         }
     }
 
@@ -706,5 +766,84 @@ pub fn describe_wave(w: &Wave) -> String {
         SameMessage => "posting the same message".into(),
         SimilarNames => format!("with names like “{}…”", w.key),
         FirstTimeBurst => "chatting for the first time at once".into(),
+    }
+}
+
+/// A readable summary of a `channel.moderate` event, and the user it targeted (if any).
+pub fn describe_moderation(action: &str, e: &Value) -> (String, Option<String>) {
+    // The details live under a key named after the action, with a few shared keys.
+    let key = match action {
+        a if a.ends_with("_blocked_term") || a.ends_with("_permitted_term") => "automod_terms",
+        "approve_unban_request" | "deny_unban_request" => "unban_request",
+        a => a,
+    };
+    let d = &e[key];
+    let user = d["user_login"].as_str().map(str::to_string);
+    let u = user.clone().unwrap_or_else(|| "someone".into());
+    let reason = d["reason"].as_str().filter(|r| !r.is_empty()).map(|r| format!(" ({r})")).unwrap_or_default();
+    let shared = if action.starts_with("shared_chat_") { "(shared chat) " } else { "" };
+    let summary = match action.trim_start_matches("shared_chat_") {
+        "ban" => format!("{shared}banned {u}{reason}"),
+        "timeout" => {
+            let mins = d["expires_at"]
+                .as_str()
+                .and_then(crate::twitch_api::parse_rfc3339_ms)
+                .map(|t| ((t - now_ms()).max(0) + 59_999) / 60_000);
+            match mins {
+                Some(m) => format!("{shared}timed out {u} for {}{reason}", crate::core::format_duration((m * 60) as u32)),
+                None => format!("{shared}timed out {u}{reason}"),
+            }
+        }
+        "unban" => format!("{shared}unbanned {u}"),
+        "untimeout" => format!("{shared}removed {u}'s timeout"),
+        "delete" => format!("{shared}deleted {u}'s message “{}”", d["message_body"].as_str().unwrap_or_default()),
+        "warn" => format!("warned {u}{reason}"),
+        "vip" => format!("made {u} a VIP"),
+        "unvip" => format!("removed {u} as VIP"),
+        "mod" => format!("made {u} a moderator"),
+        "unmod" => format!("removed {u} as moderator"),
+        "raid" => format!("started a raid to {u}"),
+        "unraid" => "cancelled the raid".into(),
+        "clear" => "cleared chat".into(),
+        "slow" => format!("turned on slow mode ({}s)", d["wait_time_seconds"].as_i64().unwrap_or(0)),
+        "slowoff" => "turned off slow mode".into(),
+        "followers" => format!("turned on followers-only ({} min)", d["follow_duration_minutes"].as_i64().unwrap_or(0)),
+        "followersoff" => "turned off followers-only".into(),
+        "subscribers" => "turned on subscribers-only".into(),
+        "subscribersoff" => "turned off subscribers-only".into(),
+        "emoteonly" => "turned on emote-only".into(),
+        "emoteonlyoff" => "turned off emote-only".into(),
+        "uniquechat" => "turned on unique chat".into(),
+        "uniquechatoff" => "turned off unique chat".into(),
+        "approve_unban_request" => format!("approved {u}'s unban request"),
+        "deny_unban_request" => format!("denied {u}'s unban request"),
+        a if key == "automod_terms" => {
+            let terms: Vec<&str> = d["terms"].as_array().map(|t| t.iter().filter_map(|x| x.as_str()).collect()).unwrap_or_default();
+            format!("{} {}", a.replace('_', " "), terms.join(", "))
+        }
+        a => a.replace('_', " "),
+    };
+    (summary, user)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::describe_moderation;
+    use serde_json::json;
+
+    #[test]
+    fn describes_moderation_events() {
+        let (s, t) = describe_moderation("ban", &json!({"ban": {"user_login": "spammer", "reason": "bots"}}));
+        assert_eq!((s.as_str(), t.as_deref()), ("banned spammer (bots)", Some("spammer")));
+        let (s, _) = describe_moderation("slow", &json!({"slow": {"wait_time_seconds": 30}}));
+        assert_eq!(s, "turned on slow mode (30s)");
+        let (s, _) = describe_moderation("add_blocked_term", &json!({"automod_terms": {"terms": ["a", "b"]}}));
+        assert_eq!(s, "add blocked term a, b");
+        let (s, _) = describe_moderation("shared_chat_ban", &json!({"shared_chat_ban": {"user_login": "x"}}));
+        assert_eq!(s, "(shared chat) banned x");
+        let (s, t) = describe_moderation("delete", &json!({"delete": {"user_login": "x", "message_body": "hi"}}));
+        assert_eq!((s.as_str(), t.as_deref()), ("deleted x's message “hi”", Some("x")));
+        let (s, _) = describe_moderation("something_new", &json!({}));
+        assert_eq!(s, "something new");
     }
 }

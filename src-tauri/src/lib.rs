@@ -1,3 +1,4 @@
+mod alerts;
 mod commands;
 mod core;
 mod db;
@@ -53,7 +54,11 @@ pub fn run() {
                 loop {
                     tick.tick().await;
                     // Keep 30 days of tuning data (test-mode hits and cleared flags).
-                    let _ = session.db.lock().unwrap().prune_tuning_data(crate::core::now_ms() - TUNING_RETENTION_MS);
+                    {
+                        let db = session.db.lock().unwrap();
+                        let _ = db.prune_tuning_data(crate::core::now_ms() - TUNING_RETENTION_MS);
+                        let _ = db.prune_feeds(crate::core::now_ms() - TUNING_RETENTION_MS);
+                    }
                     session.check_session().await;
                 }
             });
@@ -116,6 +121,12 @@ pub fn run() {
             commands::unban_request_decide,
             commands::rule_stats,
             commands::restore_default_packs,
+            commands::set_channel_alerts,
+            commands::set_channel_color,
+            commands::set_shoutout_message,
+            commands::shoutout,
+            commands::get_mod_log,
+            commands::get_activity,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

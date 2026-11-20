@@ -1,8 +1,44 @@
+import { useState } from "react";
 import type { Raid } from "../types";
 import { api } from "../api";
 import { channelColor, timeAgo } from "../util";
 
-export function RaidBanner({ raids, onDismiss }: { raids: Raid[]; onDismiss: () => void }) {
+export function ShoutoutButton({ raid, onShoutout }: { raid: Raid; onShoutout: (raid: Raid) => Promise<void> }) {
+  const [busy, setBusy] = useState(false);
+  if (raid.shoutoutAt) {
+    return (
+      <span className="shouted" title={new Date(raid.shoutoutAt).toLocaleString()}>
+        ✓ Shouted out
+      </span>
+    );
+  }
+  return (
+    <button
+      disabled={busy}
+      title={`Send Twitch's /shoutout for ${raid.fromDisplayName} in #${raid.channel}`}
+      onClick={async () => {
+        setBusy(true);
+        try {
+          await onShoutout(raid);
+        } finally {
+          setBusy(false);
+        }
+      }}
+    >
+      {busy ? "Sending…" : "📣 Shoutout"}
+    </button>
+  );
+}
+
+export function RaidBanner({
+  raids,
+  onDismiss,
+  onShoutout,
+}: {
+  raids: Raid[];
+  onDismiss: () => void;
+  onShoutout: (raid: Raid) => Promise<void>;
+}) {
   const pending = raids.filter((r) => !r.acknowledged);
   if (!pending.length) return null;
   const latest = pending[0];
@@ -14,6 +50,7 @@ export function RaidBanner({ raids, onDismiss }: { raids: Raid[]; onDismiss: () 
         <strong>{latest.viewers.toLocaleString()}</strong> viewers
         {pending.length > 1 && <span className="more"> · +{pending.length - 1} more</span>}
       </div>
+      <ShoutoutButton raid={latest} onShoutout={onShoutout} />
       <button onClick={() => api.openChat(latest.channel)}>Open chat ↗</button>
       <button className="primary" onClick={onDismiss}>
         Got it
@@ -22,13 +59,28 @@ export function RaidBanner({ raids, onDismiss }: { raids: Raid[]; onDismiss: () 
   );
 }
 
-export function RaidLog({ raids, channelFilter, now }: { raids: Raid[]; channelFilter: string | null; now: number }) {
+export function RaidLog({
+  raids,
+  channelFilter,
+  now,
+  onShoutout,
+}: {
+  raids: Raid[];
+  channelFilter: string | null;
+  now: number;
+  onShoutout: (raid: Raid) => Promise<void>;
+}) {
   const shown = raids.filter((r) => !channelFilter || r.channel === channelFilter);
   return (
     <section className="panel">
       <header className="panel-header">
         <h2>Raids {channelFilter && <span className="sub">in #{channelFilter}</span>}</h2>
       </header>
+      <p className="muted-text panel-note">
+        Shoutouts use Twitch's own /shoutout. Twitch only allows them while the channel is live, once every 2 minutes per
+        channel, and once an hour for the same streamer. A custom chat message (e.g. <code>!so @{"{raider}"}</code>) can be set per
+        channel from the ⚙ button.
+      </p>
       {shown.length === 0 ? (
         <div className="empty">
           <p>No raids yet.</p>
@@ -57,6 +109,7 @@ export function RaidLog({ raids, channelFilter, now }: { raids: Raid[]; channelF
                 </td>
                 <td className="num">{r.viewers.toLocaleString()}</td>
                 <td className="row-actions">
+                  <ShoutoutButton raid={r} onShoutout={onShoutout} />
                   <button className="ghost small" onClick={() => api.openChannel(r.fromLogin)}>
                     Raider's channel ↗
                   </button>
