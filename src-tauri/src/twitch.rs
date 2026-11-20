@@ -3,7 +3,7 @@
 //! Connects anonymously (no login needed to read public chats), joins any number of
 //! channels, reconnects with backoff, and respects Twitch's JOIN rate limit.
 
-use crate::irc::{parse_line, ChatMessage, RaidNotice};
+use crate::irc::{parse_line, ChatMessage, ModEvent, RaidNotice};
 use futures_util::{SinkExt, StreamExt};
 use serde::Serialize;
 use std::collections::{BTreeSet, VecDeque};
@@ -34,6 +34,8 @@ pub enum ChatEvent {
     Parted(String),
     Chat(ChatMessage),
     Raid(RaidNotice),
+    /// A timeout, ban or message deletion by any moderator.
+    Mod(ModEvent),
     /// Server notice, e.g. a channel that doesn't exist or is suspended.
     Notice { channel: Option<String>, text: String },
 }
@@ -54,8 +56,6 @@ pub struct ChatClient {
 impl ChatClient {
     /// Start the background connection task.
     pub fn start(initial: Vec<String>, sink: EventSink) -> Self {
-        // rustls needs a process-wide crypto backend; ignore "already installed".
-        let _ = rustls::crypto::ring::default_provider().install_default();
         let (tx, rx) = mpsc::unbounded_channel();
         let wanted = Arc::new(Mutex::new(initial.into_iter().collect::<BTreeSet<_>>()));
         tauri::async_runtime::spawn(run(rx, wanted.clone(), sink));
@@ -187,6 +187,11 @@ async fn session(
                                 sink(ChatEvent::Raid(raid));
                             }
                         }
+                        "CLEARCHAT" | "CLEARMSG" => {
+                            if let Some(ev) = ModEvent::from_irc(&msg) {
+                                sink(ChatEvent::Mod(ev));
+                            }
+                        }
                         "JOIN" => {
                             if let Some(ch) = msg.channel() {
                                 if msg.nick().is_some_and(|n| n.starts_with("justinfan")) {
@@ -219,6 +224,7 @@ mod tests {
     #[test]
     #[ignore]
     fn live_connects_and_joins() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
         let (tx, rx) = std::sync::mpsc::channel();
         let _client = ChatClient::start(
             vec!["twitch".into()],

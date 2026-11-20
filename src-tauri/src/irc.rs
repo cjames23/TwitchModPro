@@ -108,6 +108,10 @@ pub fn parse_line(line: &str) -> Option<IrcMessage> {
 pub struct ChatMessage {
     pub id: String,
     pub channel: String,
+    /// Twitch ID of the channel (`room-id` tag).
+    pub room_id: Option<String>,
+    /// Twitch ID of the sender (`user-id` tag).
+    pub user_id: Option<String>,
     pub user_login: String,
     pub display_name: String,
     pub color: Option<String>,
@@ -118,7 +122,19 @@ pub struct ChatMessage {
     pub is_vip: bool,
     pub is_subscriber: bool,
     pub is_first_msg: bool,
+    pub emote_count: usize,
     pub timestamp: i64,
+}
+
+/// Count emote occurrences in a `emotes` tag like `25:0-4,12-16/1902:6-10`.
+fn count_emotes(tag: Option<&str>) -> usize {
+    tag.map(|t| {
+        t.split('/')
+            .filter_map(|e| e.split_once(':'))
+            .map(|(_, ranges)| ranges.split(',').filter(|r| !r.is_empty()).count())
+            .sum()
+    })
+    .unwrap_or(0)
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -169,6 +185,9 @@ impl ChatMessage {
             is_vip: msg.tag("vip").is_some() || has_badge("vip"),
             is_subscriber: msg.tag("subscriber") == Some("1") || has_badge("subscriber"),
             is_first_msg: msg.tag("first-msg") == Some("1"),
+            emote_count: count_emotes(msg.tag("emotes")),
+            room_id: msg.tag("room-id").map(str::to_string),
+            user_id: msg.tag("user-id").map(str::to_string),
             timestamp: sent_ts(msg),
             channel,
             user_login,
@@ -201,13 +220,46 @@ impl RaidNotice {
     }
 }
 
+/// A timeout, ban or chat clear (`CLEARCHAT`), or a single deleted message (`CLEARMSG`),
+/// done by any moderator in a channel we're watching.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ModEvent {
+    /// `duration_secs` is None for a permanent ban.
+    UserCleared { channel: String, login: String, user_id: Option<String>, duration_secs: Option<u32>, timestamp: i64 },
+    MessageDeleted { channel: String, login: String, message_id: String },
+}
+
+impl ModEvent {
+    pub fn from_irc(msg: &IrcMessage) -> Option<Self> {
+        match msg.command.as_str() {
+            "CLEARCHAT" => {
+                // Without a target user, the whole chat was cleared; nothing to record.
+                let login = msg.params.get(1)?.to_lowercase();
+                Some(ModEvent::UserCleared {
+                    channel: msg.channel()?,
+                    login,
+                    user_id: msg.tag("target-user-id").map(str::to_string),
+                    duration_secs: msg.tag("ban-duration").and_then(|d| d.parse().ok()),
+                    timestamp: sent_ts(msg),
+                })
+            }
+            "CLEARMSG" => Some(ModEvent::MessageDeleted {
+                channel: msg.channel()?,
+                login: msg.tag("login")?.to_lowercase(),
+                message_id: msg.tag("target-msg-id")?.to_string(),
+            }),
+            _ => None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn parses_privmsg_with_tags() {
-        let line = "@badge-info=;badges=moderator/1,subscriber/12;color=#FF4500;display-name=SomeMod;emotes=;first-msg=0;id=abc-123;mod=1;subscriber=1;tmi-sent-ts=1700000000000 :somemod!somemod@somemod.tmi.twitch.tv PRIVMSG #CoolStreamer :hello there chat";
+        let line = "@badge-info=;badges=moderator/1,subscriber/12;color=#FF4500;display-name=SomeMod;emotes=25:0-4,12-16/1902:6-10;first-msg=0;id=abc-123;mod=1;room-id=111;subscriber=1;tmi-sent-ts=1700000000000;user-id=222 :somemod!somemod@somemod.tmi.twitch.tv PRIVMSG #CoolStreamer :hello there chat";
         let msg = parse_line(line).unwrap();
         assert_eq!(msg.command, "PRIVMSG");
         let chat = ChatMessage::from_irc(&msg).unwrap();
@@ -218,6 +270,9 @@ mod tests {
         assert!(chat.is_mod && chat.is_subscriber && !chat.is_vip && !chat.is_broadcaster);
         assert_eq!(chat.timestamp, 1700000000000);
         assert_eq!(chat.id, "abc-123");
+        assert_eq!(chat.emote_count, 3);
+        assert_eq!(chat.room_id.as_deref(), Some("111"));
+        assert_eq!(chat.user_id.as_deref(), Some("222"));
     }
 
     #[test]
@@ -244,6 +299,29 @@ mod tests {
     fn non_raid_usernotice_is_ignored() {
         let line = "@msg-id=sub;login=x :tmi.twitch.tv USERNOTICE #chan :yay";
         assert!(RaidNotice::from_irc(&parse_line(line).unwrap()).is_none());
+    }
+
+    #[test]
+    fn parses_clearchat_and_clearmsg() {
+        let t = "@ban-duration=600;room-id=1;target-user-id=42;tmi-sent-ts=1700000000000 :tmi.twitch.tv CLEARCHAT #chan :SpamGuy";
+        assert_eq!(
+            ModEvent::from_irc(&parse_line(t).unwrap()),
+            Some(ModEvent::UserCleared {
+                channel: "chan".into(),
+                login: "spamguy".into(),
+                user_id: Some("42".into()),
+                duration_secs: Some(600),
+                timestamp: 1700000000000
+            })
+        );
+        let b = "@room-id=1;target-user-id=42 :tmi.twitch.tv CLEARCHAT #chan :spamguy";
+        assert!(matches!(ModEvent::from_irc(&parse_line(b).unwrap()), Some(ModEvent::UserCleared { duration_secs: None, .. })));
+        assert_eq!(ModEvent::from_irc(&parse_line(":tmi.twitch.tv CLEARCHAT #chan").unwrap()), None);
+        let m = "@login=spamguy;room-id=;target-msg-id=abc :tmi.twitch.tv CLEARMSG #chan :bad words";
+        assert_eq!(
+            ModEvent::from_irc(&parse_line(m).unwrap()),
+            Some(ModEvent::MessageDeleted { channel: "chan".into(), login: "spamguy".into(), message_id: "abc".into() })
+        );
     }
 
     #[test]

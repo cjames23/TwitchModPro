@@ -1,7 +1,34 @@
 import { useEffect, useState } from "react";
-import type { Channel, Rule, Severity } from "../types";
+import type { Channel, Rule, RuleKind, RuleMatch, RuleParams, Severity } from "../types";
 import { api } from "../api";
 import { highlight } from "../util";
+
+const DEFAULT_PARAMS: RuleParams = {
+  minLength: 12,
+  capsPercent: 75,
+  maxRepeatedChars: 12,
+  maxEmotes: 12,
+  repeatCount: 3,
+  repeatWindowSecs: 60,
+  maxAccountAgeDays: 7,
+};
+
+const KINDS: { kind: RuleKind; label: string; help: string }[] = [
+  { kind: "keyword", label: "Words & phrases", help: "Flag messages (or usernames) containing any of these words." },
+  { kind: "regex", label: "Regular expression", help: "Advanced pattern matching." },
+  { kind: "links", label: "Links", help: "Flag any link, except to the domains you allow." },
+  { kind: "caps", label: "Excessive caps", help: "Flag messages that are mostly capital letters." },
+  { kind: "spam", label: "Symbol & emote spam", help: "Long runs of one character, too many emotes, or ASCII art." },
+  { kind: "repeat", label: "Repeated messages", help: "The same user sending the same message again and again." },
+  { kind: "firstMessage", label: "First-time chatters", help: "A user's first message in the channel." },
+  {
+    kind: "newAccount",
+    label: "New accounts",
+    help: "Accounts created recently. Checked with Twitch within about a second, and flagged once per user per channel.",
+  },
+];
+
+const kindLabel = (k: RuleKind) => KINDS.find((x) => x.kind === k)?.label ?? k;
 
 const blankRule = (): Rule => ({
   id: 0,
@@ -14,6 +41,10 @@ const blankRule = (): Rule => ({
   channels: [],
   severity: "medium",
   exemptPrivileged: true,
+  target: "message",
+  normalize: true,
+  activeDuring: "always",
+  params: { ...DEFAULT_PARAMS },
 });
 
 interface Props {
@@ -29,6 +60,17 @@ export function Rules({ rules, channels, onRulesChanged }: Props) {
     onRulesChanged(await api.saveRule({ ...rule, enabled: !rule.enabled }));
   }
 
+  function summary(r: Rule) {
+    const parts = [kindLabel(r.kind)];
+    if (r.kind === "keyword" || r.kind === "regex") {
+      parts.push(`${r.patterns.length} pattern${r.patterns.length === 1 ? "" : "s"}`);
+      if (r.target === "username") parts.push("usernames");
+    }
+    parts.push(r.channels.length ? r.channels.map((c) => `#${c}`).join(", ") : "all channels");
+    if (r.activeDuring === "raid") parts.push("raid mode only");
+    return parts.join(" · ");
+  }
+
   return (
     <section className="panel">
       <header className="panel-header">
@@ -40,7 +82,11 @@ export function Rules({ rules, channels, onRulesChanged }: Props) {
 
       <div className="rules-layout">
         <div className="rule-list">
-          {rules.length === 0 && <div className="empty"><p>No rules yet. Create one to start flagging messages.</p></div>}
+          {rules.length === 0 && (
+            <div className="empty">
+              <p>No rules yet. Create one to start flagging messages.</p>
+            </div>
+          )}
           {rules.map((r) => (
             <div key={r.id} className={`rule-row ${editing?.id === r.id ? "active" : ""} ${r.enabled ? "" : "disabled"}`}>
               <label className="switch" title={r.enabled ? "Enabled" : "Disabled"}>
@@ -50,11 +96,9 @@ export function Rules({ rules, channels, onRulesChanged }: Props) {
               <button className="rule-main" onClick={() => setEditing(r)}>
                 <div className="rule-title">
                   {r.name} <span className={`sev-badge ${r.severity}`}>{r.severity}</span>
+                  {r.activeDuring === "raid" && <span className="raid-tag">⚡ raid</span>}
                 </div>
-                <div className="rule-meta">
-                  {r.kind === "regex" ? "Regex" : "Keywords"} · {r.patterns.length} pattern{r.patterns.length === 1 ? "" : "s"} ·{" "}
-                  {r.channels.length ? r.channels.map((c) => `#${c}`).join(", ") : "all channels"}
-                </div>
+                <div className="rule-meta">{summary(r)}</div>
               </button>
             </div>
           ))}
@@ -81,6 +125,31 @@ export function Rules({ rules, channels, onRulesChanged }: Props) {
   );
 }
 
+function NumberField(props: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  suffix?: string;
+  onChange: (n: number) => void;
+}) {
+  return (
+    <label className="field">
+      <span>{props.label}</span>
+      <div className="num-field">
+        <input
+          type="number"
+          min={props.min}
+          max={props.max}
+          value={props.value}
+          onChange={(e) => props.onChange(Math.min(props.max, Math.max(props.min, Number(e.target.value) || props.min)))}
+        />
+        {props.suffix && <span className="hint">{props.suffix}</span>}
+      </div>
+    </label>
+  );
+}
+
 function RuleEditor({
   initial,
   channels,
@@ -92,31 +161,38 @@ function RuleEditor({
   onCancel: () => void;
   onSaved: (rules: Rule[]) => void;
 }) {
-  const [rule, setRule] = useState<Rule>(initial);
+  const [rule, setRule] = useState<Rule>({ ...initial, params: { ...DEFAULT_PARAMS, ...initial.params } });
   const [patternText, setPatternText] = useState(initial.patterns.join("\n"));
   const [error, setError] = useState<string | null>(null);
   const [sample, setSample] = useState("");
-  const [sampleResult, setSampleResult] = useState<{ terms: string[]; error?: string } | null>(null);
+  const [sampleUser, setSampleUser] = useState("");
+  const [sampleFirst, setSampleFirst] = useState(false);
+  const [sampleResult, setSampleResult] = useState<{ matches: RuleMatch[]; error?: string } | null>(null);
 
   const draft: Rule = { ...rule, patterns: patternText.split("\n").map((p) => p.trim()).filter(Boolean) };
   const set = <K extends keyof Rule>(k: K, v: Rule[K]) => setRule((r) => ({ ...r, [k]: v }));
+  const setParam = <K extends keyof RuleParams>(k: K, v: RuleParams[K]) =>
+    setRule((r) => ({ ...r, params: { ...r.params, [k]: v } }));
+
+  const usesPatterns = rule.kind === "keyword" || rule.kind === "regex";
+  const byUsername = usesPatterns && rule.target === "username";
 
   // Live tester: re-run whenever the sample or the rule changes.
   const draftKey = JSON.stringify(draft);
   useEffect(() => {
-    if (!sample.trim()) {
+    if (!sample.trim() && !(byUsername && sampleUser.trim()) && !sampleFirst) {
       setSampleResult(null);
       return;
     }
     const t = setTimeout(() => {
       api
-        .testRule({ ...draft, name: draft.name || "test" }, sample)
-        .then((terms) => setSampleResult({ terms }))
-        .catch((e) => setSampleResult({ terms: [], error: String(e) }));
+        .testRule({ ...draft, name: draft.name || "test" }, sample, sampleUser, sampleFirst)
+        .then((matches) => setSampleResult({ matches }))
+        .catch((e) => setSampleResult({ matches: [], error: String(e) }));
     }, 200);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sample, draftKey]);
+  }, [sample, sampleUser, sampleFirst, draftKey]);
 
   async function save() {
     setError(null);
@@ -132,6 +208,8 @@ function RuleEditor({
   }
 
   const channelNames = Array.from(new Set([...channels.map((c) => c.name), ...rule.channels]));
+  const kindInfo = KINDS.find((k) => k.kind === rule.kind)!;
+  const hit = sampleResult?.matches[0];
 
   return (
     <div className="rule-editor">
@@ -144,10 +222,13 @@ function RuleEditor({
 
       <div className="field-row">
         <label className="field">
-          <span>Match type</span>
-          <select value={rule.kind} onChange={(e) => set("kind", e.target.value as Rule["kind"])}>
-            <option value="keyword">Words &amp; phrases</option>
-            <option value="regex">Regular expression</option>
+          <span>Type</span>
+          <select value={rule.kind} onChange={(e) => set("kind", e.target.value as RuleKind)}>
+            {KINDS.map((k) => (
+              <option key={k.kind} value={k.kind}>
+                {k.label}
+              </option>
+            ))}
           </select>
         </label>
         <label className="field">
@@ -159,34 +240,117 @@ function RuleEditor({
           </select>
         </label>
       </div>
+      <p className="hint kind-help">{kindInfo.help}</p>
 
-      <label className="field">
-        <span>{rule.kind === "regex" ? "Patterns (one per line)" : "Words or phrases (one per line)"}</span>
-        <textarea
-          rows={6}
-          value={patternText}
-          onChange={(e) => setPatternText(e.target.value)}
-          placeholder={rule.kind === "regex" ? "bit\\.ly/\\w+\n(?:discord\\.gg|discord\\.com/invite)/\\w+" : "free followers\nspoiler"}
-          spellCheck={false}
-        />
-      </label>
+      {usesPatterns && (
+        <>
+          <div className="field">
+            <span>Check</span>
+            <div className="seg fit">
+              <button className={rule.target === "message" ? "on" : ""} onClick={() => set("target", "message")}>
+                Message text
+              </button>
+              <button className={rule.target === "username" ? "on" : ""} onClick={() => set("target", "username")}>
+                Username
+              </button>
+            </div>
+          </div>
+          <label className="field">
+            <span>{rule.kind === "regex" ? "Patterns (one per line)" : "Words or phrases (one per line)"}</span>
+            <textarea
+              rows={5}
+              value={patternText}
+              onChange={(e) => setPatternText(e.target.value)}
+              placeholder={
+                rule.kind === "regex"
+                  ? "bit\\.ly/\\w+\n(?:discord\\.gg|discord\\.com/invite)/\\w+"
+                  : byUsername
+                    ? "hoss00312\nviewerbot"
+                    : "free followers\nspoiler"
+              }
+              spellCheck={false}
+            />
+          </label>
+        </>
+      )}
+
+      {rule.kind === "links" && (
+        <label className="field">
+          <span>Allowed domains (one per line, subdomains included)</span>
+          <textarea
+            rows={4}
+            value={patternText}
+            onChange={(e) => setPatternText(e.target.value)}
+            placeholder={"twitch.tv\nyoutube.com\nclips.twitch.tv"}
+            spellCheck={false}
+          />
+        </label>
+      )}
+
+      {rule.kind === "caps" && (
+        <div className="field-row">
+          <NumberField label="Flag when capitals are at least" value={rule.params.capsPercent} min={1} max={100} suffix="%" onChange={(n) => setParam("capsPercent", n)} />
+          <NumberField label="Ignore messages shorter than" value={rule.params.minLength} min={1} max={500} suffix="letters" onChange={(n) => setParam("minLength", n)} />
+        </div>
+      )}
+
+      {rule.kind === "spam" && (
+        <div className="field-row">
+          <NumberField label="Same character repeated" value={rule.params.maxRepeatedChars} min={3} max={500} suffix="+ times" onChange={(n) => setParam("maxRepeatedChars", n)} />
+          <NumberField label="More emotes than" value={rule.params.maxEmotes} min={1} max={500} onChange={(n) => setParam("maxEmotes", n)} />
+        </div>
+      )}
+
+      {rule.kind === "newAccount" && (
+        <div className="field-row">
+          <NumberField
+            label="Flag accounts younger than"
+            value={rule.params.maxAccountAgeDays}
+            min={1}
+            max={3650}
+            suffix="days"
+            onChange={(n) => setParam("maxAccountAgeDays", n)}
+          />
+        </div>
+      )}
+
+      {rule.kind === "repeat" && (
+        <div className="field-row">
+          <NumberField label="Flag on message number" value={rule.params.repeatCount} min={2} max={50} onChange={(n) => setParam("repeatCount", n)} />
+          <NumberField label="Within" value={rule.params.repeatWindowSecs} min={5} max={3600} suffix="seconds" onChange={(n) => setParam("repeatWindowSecs", n)} />
+        </div>
+      )}
 
       <div className="checks">
+        {usesPatterns && (
+          <>
+            <label>
+              <input type="checkbox" checked={rule.normalize} onChange={(e) => set("normalize", e.target.checked)} />
+              Catch disguised spellings <span className="hint">(fr33, ｆｒｅｅ, lookalike letters, hidden characters)</span>
+            </label>
+            <label>
+              <input type="checkbox" checked={rule.wholeWord} onChange={(e) => set("wholeWord", e.target.checked)} />
+              Whole words only <span className="hint">(“ass” won't match “class”)</span>
+            </label>
+            {!rule.normalize && (
+              <label>
+                <input type="checkbox" checked={rule.caseSensitive} onChange={(e) => set("caseSensitive", e.target.checked)} />
+                Case sensitive
+              </label>
+            )}
+          </>
+        )}
         <label>
-          <input type="checkbox" checked={rule.wholeWord} onChange={(e) => set("wholeWord", e.target.checked)} />
-          Whole words only <span className="hint">(“ass” won't match “class”)</span>
-        </label>
-        <label>
-          <input type="checkbox" checked={rule.caseSensitive} onChange={(e) => set("caseSensitive", e.target.checked)} />
-          Case sensitive
+          <input type="checkbox" checked={rule.exemptPrivileged} onChange={(e) => set("exemptPrivileged", e.target.checked)} />
+          Ignore mods, VIPs and the broadcaster
         </label>
         <label>
           <input
             type="checkbox"
-            checked={rule.exemptPrivileged}
-            onChange={(e) => set("exemptPrivileged", e.target.checked)}
+            checked={rule.activeDuring === "raid"}
+            onChange={(e) => set("activeDuring", e.target.checked ? "raid" : "always")}
           />
-          Ignore mods, VIPs and the broadcaster
+          Only during raid mode <span className="hint">(for a few minutes after a raid)</span>
         </label>
       </div>
 
@@ -212,16 +376,29 @@ function RuleEditor({
       </div>
 
       <div className="tester">
-        <label className="field">
-          <span>Try it: type a sample message</span>
-          <input value={sample} onChange={(e) => setSample(e.target.value)} placeholder="Paste a chat message to test this rule" />
-        </label>
+        <span className="tester-label">Try it</span>
+        {byUsername ? (
+          <input value={sampleUser} onChange={(e) => setSampleUser(e.target.value)} placeholder="Type a username to test" />
+        ) : (
+          <input value={sample} onChange={(e) => setSample(e.target.value)} placeholder="Type or paste a chat message to test" />
+        )}
+        {rule.kind === "firstMessage" && (
+          <label className="check">
+            <input type="checkbox" checked={sampleFirst} onChange={(e) => setSampleFirst(e.target.checked)} />
+            Pretend it's the user's first message
+          </label>
+        )}
+        {rule.kind === "repeat" && <span className="hint">The tester sends your sample {rule.params.repeatCount} times.</span>}
+        {rule.kind === "newAccount" && <span className="hint">Account age comes from Twitch, so this rule can't be tried here.</span>}
         {sampleResult &&
           (sampleResult.error ? (
             <div className="form-error">{sampleResult.error}</div>
-          ) : sampleResult.terms.length ? (
+          ) : hit ? (
             <div className="test-hit">
-              ⚑ Would flag: <span className="msg-text">{highlight(sample, sampleResult.terms)}</span>
+              ⚑ Would flag{hit.reason ? `: ${hit.reason}` : ""}
+              {hit.terms.length > 0 && (
+                <div className="msg-text">{highlight(sample, hit.terms)}</div>
+              )}
             </div>
           ) : (
             <div className="test-miss">No match</div>
