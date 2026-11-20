@@ -1,10 +1,10 @@
 //! App core: login session, mod-verified channels, chat processing, raid mode,
 //! user history and moderation actions.
 
-use crate::db::{Channel, ContextLine, Db, Flag, ModAction, Raid};
+use crate::db::{Channel, ContextLine, Db, Flag, ModAction, Raid, RuleHit};
 use crate::eventsub::EventSubClient;
 use crate::irc::{ChatMessage, RaidNotice};
-use crate::rules::{EvalCtx, RuleEngine, RuleKind, Severity};
+use crate::rules::{EvalCtx, RuleEngine, RuleKind, RuleMatch, Severity};
 use crate::waves::{WaveConfig, WaveDetector};
 use crate::twitch::{ChatClient, ChatEvent, ConnStatus};
 use crate::twitch_api::{self as api, Account, ApiError, DeviceStart, Endpoints, Helix, ModChannel, PollResult, Tokens};
@@ -606,7 +606,7 @@ impl Core {
         let raid_mode = self.in_raid_mode(&msg.channel);
         let created_at = self.age_cache.lock().unwrap().get(&msg.user_login).copied();
         let key = (msg.channel.clone(), msg.user_login.clone());
-        let (mut matches, needs_age) = {
+        let (matches, needs_age) = {
             let engine = self.engine.read().unwrap();
             let mut matches = engine.evaluate_with(&msg, EvalCtx { raid_mode, account_created_at: created_at });
             let needs_age = created_at.is_none() && engine.needs_account_age(&msg, raid_mode);
@@ -625,6 +625,9 @@ impl Core {
             }
             (matches, needs_age)
         };
+        // Rules in test mode only record what they would have flagged.
+        let (tests, mut matches): (Vec<RuleMatch>, Vec<RuleMatch>) = matches.into_iter().partition(|m| m.test_mode);
+        self.record_test_hits(&msg, tests);
         matches.sort_by(|a, b| b.severity.cmp(&a.severity));
         let severity = matches.iter().map(|m| m.severity).max();
         let line = ContextLine { display_name: msg.display_name.clone(), text: msg.text.clone(), timestamp: msg.timestamp };
@@ -697,6 +700,25 @@ impl Core {
 
         self.observe_waves(&msg);
         self.pending_chat.lock().unwrap().push(LiveMessage { msg, flag_severity: severity });
+    }
+
+    pub(crate) fn record_test_hits(&self, msg: &ChatMessage, tests: Vec<RuleMatch>) {
+        if tests.is_empty() {
+            return;
+        }
+        let db = self.db.lock().unwrap();
+        for m in tests {
+            let _ = db.insert_rule_hit(&RuleHit {
+                rule_id: m.rule_id,
+                channel: msg.channel.clone(),
+                user_login: msg.user_login.clone(),
+                display_name: msg.display_name.clone(),
+                text: msg.text.clone(),
+                terms: m.terms,
+                reason: m.reason,
+                timestamp: msg.timestamp,
+            });
+        }
     }
 
     /// Save a new flag, start collecting follow-up context, alert if needed and send it to the UI.

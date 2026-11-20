@@ -5,6 +5,7 @@ mod eventsub;
 mod intel;
 mod irc;
 mod normalize;
+mod packs;
 mod rules;
 mod twitch;
 mod twitch_api;
@@ -18,6 +19,8 @@ use std::sync::Arc;
 use std::time::Duration;
 use tauri::{Emitter, Manager};
 use twitch::ChatClient;
+
+const TUNING_RETENTION_MS: i64 = 30 * 86_400_000;
 
 /// Live chat is sent to the UI in batches at this interval.
 const CHAT_FLUSH: Duration = Duration::from_millis(150);
@@ -47,9 +50,10 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 session.restore_session().await;
                 let mut tick = tokio::time::interval(SESSION_CHECK);
-                tick.tick().await;
                 loop {
                     tick.tick().await;
+                    // Keep 30 days of tuning data (test-mode hits and cleared flags).
+                    let _ = session.db.lock().unwrap().prune_tuning_data(crate::core::now_ms() - TUNING_RETENTION_MS);
                     session.check_session().await;
                 }
             });
@@ -110,6 +114,8 @@ pub fn run() {
             commands::dismiss_wave,
             commands::automod_decide,
             commands::unban_request_decide,
+            commands::rule_stats,
+            commands::restore_default_packs,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

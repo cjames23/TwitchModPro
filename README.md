@@ -33,6 +33,29 @@ Built with [Tauri 2](https://tauri.app) (Rust backend) and React + TypeScript.
   - `A`/`N` to approve or deny AutoMod messages and unban requests
   - `U` to open the user panel, `C` for context
   - `?` to show the list
+- **Default rule packs**, which start in test mode:
+  - **Parasocial:** stalking/location, romantic/possessive, personal probing, jealousy/entitlement, and fixation (one user talking to the streamer over and over)
+  - **Sexual content:** explicit requests, body comments, camera/pose requests, and innuendo (off by default)
+  - **Harassment:** telling someone to die
+  - **Wellbeing:** self-harm statements, shown as a check-in with no punishment
+  - **Chat quality:** backseating (off by default)
+
+  Deleted pack rules can be brought back from the Tuning view.
+- **Rule options:**
+  - "Must also contain" (a second word list that also has to match)
+  - "Only messages to the streamer" (their name, @, or "you"; replies to other chatters don't count)
+  - exception phrases
+  - ignore subscribers
+  - ignore accounts older than N days
+  - wellbeing mode
+- **Test mode:** a rule in test mode records what it *would* have flagged without touching your queue. New rules start in test mode.
+- **Tuning view:**
+  - per-rule and per-word stats over 7 or 30 days: flags, acted on, dismissed, accuracy
+  - test-mode examples
+  - one-click suggestions: remove a noisy word, lower or raise severity, send a rule back to test mode, turn on a tested rule
+  - quick exception phrases
+
+  Cleared flags are archived instead of deleted, so they still count, and tuning data is kept for 30 days.
 - **Raid alerts and raid mode.** A banner and notification show which channel was raided, by whom, and with how many viewers. Raid mode turns on automatically for a few minutes after a raid (configurable), and you can start or end it by hand with ⚡ in the sidebar.
 - **Live chat.** One column per channel, with flagged lines highlighted. Click a name to open the user panel.
 - **Alerts.**
@@ -93,6 +116,7 @@ src-tauri/src/
   waves.rs       Spam-wave detector
   intel.rs       Account ages, other mods' actions, waves, inbox, ban-everywhere, bulk actions
   normalize.rs   Anti-evasion text normalization, with mapping back to the original text
+  packs.rs       Default rule packs (parasocial, sexual content, harassment, wellbeing)
   rules.rs       Rules engine (keywords, regex, links, caps, spam, repeats, first message)
   db.rs          SQLite storage and migrations: channels, rules, flags, raids, mod actions, settings
   core.rs        Session, mod-verified channels, chat processing, raid mode, user history, actions
@@ -107,6 +131,6 @@ src/
 
 - Rule import/export for sharing between mod teams
 - Raid vetting (raider's account age and history) and switching on followers-only / slow mode / Shield Mode during raid mode
-- Rule tuning stats and shift summaries
+- Shift summaries
 - A shared queue for whole mod teams (needs a server)
 - Auto-update and code-signed installers

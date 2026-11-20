@@ -11,6 +11,8 @@ const DEFAULT_PARAMS: RuleParams = {
   repeatCount: 3,
   repeatWindowSecs: 60,
   maxAccountAgeDays: 7,
+  fixationCount: 8,
+  fixationWindowMins: 10,
 };
 
 const KINDS: { kind: RuleKind; label: string; help: string }[] = [
@@ -21,6 +23,11 @@ const KINDS: { kind: RuleKind; label: string; help: string }[] = [
   { kind: "spam", label: "Symbol & emote spam", help: "Long runs of one character, too many emotes, or ASCII art." },
   { kind: "repeat", label: "Repeated messages", help: "The same user sending the same message again and again." },
   { kind: "firstMessage", label: "First-time chatters", help: "A user's first message in the channel." },
+  {
+    kind: "fixation",
+    label: "Fixation on the streamer",
+    help: "One user talking to the streamer over and over in a short time. Flags once per window.",
+  },
   {
     kind: "newAccount",
     label: "New accounts",
@@ -45,16 +52,31 @@ const blankRule = (): Rule => ({
   normalize: true,
   activeDuring: "always",
   params: { ...DEFAULT_PARAMS },
+  alsoPatterns: [],
+  addressedToStreamer: false,
+  exceptions: [],
+  skipSubscribers: false,
+  skipAccountsOlderThanDays: 0,
+  mode: "test",
+  wellbeing: false,
+  pack: null,
 });
 
 interface Props {
   rules: Rule[];
   channels: Channel[];
   onRulesChanged: (rules: Rule[]) => void;
+  /** Open this rule in the editor (e.g. from the Tuning view). */
+  editRuleId?: number | null;
 }
 
-export function Rules({ rules, channels, onRulesChanged }: Props) {
+export function Rules({ rules, channels, onRulesChanged, editRuleId }: Props) {
   const [editing, setEditing] = useState<Rule | null>(null);
+
+  useEffect(() => {
+    if (editRuleId) setEditing(rules.find((r) => r.id === editRuleId) ?? null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editRuleId]);
 
   async function toggle(rule: Rule) {
     onRulesChanged(await api.saveRule({ ...rule, enabled: !rule.enabled }));
@@ -68,6 +90,7 @@ export function Rules({ rules, channels, onRulesChanged }: Props) {
     }
     parts.push(r.channels.length ? r.channels.map((c) => `#${c}`).join(", ") : "all channels");
     if (r.activeDuring === "raid") parts.push("raid mode only");
+    if (r.addressedToStreamer) parts.push("to the streamer");
     return parts.join(" · ");
   }
 
@@ -97,8 +120,13 @@ export function Rules({ rules, channels, onRulesChanged }: Props) {
                 <div className="rule-title">
                   {r.name} <span className={`sev-badge ${r.severity}`}>{r.severity}</span>
                   {r.activeDuring === "raid" && <span className="raid-tag">⚡ raid</span>}
+                  {r.mode === "test" && <span className="test-tag">test</span>}
+                  {r.wellbeing && <span className="wellbeing-tag">wellbeing</span>}
                 </div>
-                <div className="rule-meta">{summary(r)}</div>
+                <div className="rule-meta">
+                  {r.pack && <span className="pack-tag">{r.pack}</span>}
+                  {summary(r)}
+                </div>
               </button>
             </div>
           ))}
@@ -163,13 +191,16 @@ function RuleEditor({
 }) {
   const [rule, setRule] = useState<Rule>({ ...initial, params: { ...DEFAULT_PARAMS, ...initial.params } });
   const [patternText, setPatternText] = useState(initial.patterns.join("\n"));
+  const [alsoText, setAlsoText] = useState(initial.alsoPatterns.join("\n"));
+  const [exceptionText, setExceptionText] = useState(initial.exceptions.join("\n"));
   const [error, setError] = useState<string | null>(null);
   const [sample, setSample] = useState("");
   const [sampleUser, setSampleUser] = useState("");
   const [sampleFirst, setSampleFirst] = useState(false);
   const [sampleResult, setSampleResult] = useState<{ matches: RuleMatch[]; error?: string } | null>(null);
 
-  const draft: Rule = { ...rule, patterns: patternText.split("\n").map((p) => p.trim()).filter(Boolean) };
+  const lines = (t: string) => t.split("\n").map((p) => p.trim()).filter(Boolean);
+  const draft: Rule = { ...rule, patterns: lines(patternText), alsoPatterns: lines(alsoText), exceptions: lines(exceptionText) };
   const set = <K extends keyof Rule>(k: K, v: Rule[K]) => setRule((r) => ({ ...r, [k]: v }));
   const setParam = <K extends keyof RuleParams>(k: K, v: RuleParams[K]) =>
     setRule((r) => ({ ...r, params: { ...r.params, [k]: v } }));
@@ -219,6 +250,23 @@ function RuleEditor({
         <span>Name</span>
         <input value={rule.name} onChange={(e) => set("name", e.target.value)} placeholder="e.g. Spoilers" autoFocus />
       </label>
+
+      <div className="field">
+        <span>Mode</span>
+        <div className="seg fit">
+          <button className={rule.mode === "test" ? "on" : ""} onClick={() => set("mode", "test")}>
+            Test (silent)
+          </button>
+          <button className={rule.mode === "active" ? "on" : ""} onClick={() => set("mode", "active")}>
+            Active (creates flags)
+          </button>
+        </div>
+        <span className="hint">
+          {rule.mode === "test"
+            ? "Records what it would flag, shown in Tuning. Nothing appears in your queue."
+            : "Matches go to the flag queue and can alert you."}
+        </span>
+      </div>
 
       <div className="field-row">
         <label className="field">
@@ -271,7 +319,26 @@ function RuleEditor({
               spellCheck={false}
             />
           </label>
+          {!byUsername && (
+            <label className="field">
+              <span>Must also contain one of (optional, one per line)</span>
+              <textarea
+                rows={3}
+                value={alsoText}
+                onChange={(e) => setAlsoText(e.target.value)}
+                placeholder={"feet\nbody"}
+                spellCheck={false}
+              />
+            </label>
+          )}
         </>
+      )}
+
+      {rule.kind === "fixation" && (
+        <div className="field-row">
+          <NumberField label="Flag on message number" value={rule.params.fixationCount} min={2} max={100} onChange={(n) => setParam("fixationCount", n)} />
+          <NumberField label="To the streamer within" value={rule.params.fixationWindowMins} min={1} max={240} suffix="minutes" onChange={(n) => setParam("fixationWindowMins", n)} />
+        </div>
       )}
 
       {rule.kind === "links" && (
@@ -344,6 +411,24 @@ function RuleEditor({
           <input type="checkbox" checked={rule.exemptPrivileged} onChange={(e) => set("exemptPrivileged", e.target.checked)} />
           Ignore mods, VIPs and the broadcaster
         </label>
+        {rule.kind !== "fixation" && !byUsername && (
+          <label>
+            <input
+              type="checkbox"
+              checked={rule.addressedToStreamer}
+              onChange={(e) => set("addressedToStreamer", e.target.checked)}
+            />
+            Only messages to the streamer <span className="hint">(their name, @, or “you”; not replies to other chatters)</span>
+          </label>
+        )}
+        <label>
+          <input type="checkbox" checked={rule.skipSubscribers} onChange={(e) => set("skipSubscribers", e.target.checked)} />
+          Ignore subscribers
+        </label>
+        <label>
+          <input type="checkbox" checked={rule.wellbeing} onChange={(e) => set("wellbeing", e.target.checked)} />
+          Wellbeing check <span className="hint">(shown as a check-in, with no suggested punishment)</span>
+        </label>
         <label>
           <input
             type="checkbox"
@@ -352,6 +437,27 @@ function RuleEditor({
           />
           Only during raid mode <span className="hint">(for a few minutes after a raid)</span>
         </label>
+      </div>
+
+      <div className="field-row">
+        <label className="field">
+          <span>Exceptions: never flag messages containing (one per line)</span>
+          <textarea
+            rows={3}
+            value={exceptionText}
+            onChange={(e) => setExceptionText(e.target.value)}
+            placeholder={"die hard\ndark souls"}
+            spellCheck={false}
+          />
+        </label>
+        <NumberField
+          label="Ignore accounts older than (0 = off)"
+          value={rule.skipAccountsOlderThanDays}
+          min={0}
+          max={3650}
+          suffix="days"
+          onChange={(n) => set("skipAccountsOlderThanDays", n)}
+        />
       </div>
 
       <div className="field">
@@ -389,13 +495,16 @@ function RuleEditor({
           </label>
         )}
         {rule.kind === "repeat" && <span className="hint">The tester sends your sample {rule.params.repeatCount} times.</span>}
-        {rule.kind === "newAccount" && <span className="hint">Account age comes from Twitch, so this rule can't be tried here.</span>}
+        {(rule.kind === "newAccount" || rule.kind === "fixation") && (
+          <span className="hint">This rule depends on account age or message history, so it can't be tried here.</span>
+        )}
         {sampleResult &&
           (sampleResult.error ? (
             <div className="form-error">{sampleResult.error}</div>
           ) : hit ? (
             <div className="test-hit">
               ⚑ Would flag{hit.reason ? `: ${hit.reason}` : ""}
+              {rule.addressedToStreamer && <span className="hint"> (the tester counts your sample as talking to the streamer only if it says “you” or names them)</span>}
               {hit.terms.length > 0 && (
                 <div className="msg-text">{highlight(sample, hit.terms)}</div>
               )}

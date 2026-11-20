@@ -123,6 +123,9 @@ pub struct ChatMessage {
     pub is_subscriber: bool,
     pub is_first_msg: bool,
     pub emote_count: usize,
+    /// Login of the user this message replies to, if it's a reply.
+    #[serde(default)]
+    pub reply_to: Option<String>,
     pub timestamp: i64,
 }
 
@@ -186,6 +189,7 @@ impl ChatMessage {
             is_subscriber: msg.tag("subscriber") == Some("1") || has_badge("subscriber"),
             is_first_msg: msg.tag("first-msg") == Some("1"),
             emote_count: count_emotes(msg.tag("emotes")),
+            reply_to: msg.tag("reply-parent-user-login").map(|l| l.to_lowercase()),
             room_id: msg.tag("room-id").map(str::to_string),
             user_id: msg.tag("user-id").map(str::to_string),
             timestamp: sent_ts(msg),
@@ -259,7 +263,7 @@ mod tests {
 
     #[test]
     fn parses_privmsg_with_tags() {
-        let line = "@badge-info=;badges=moderator/1,subscriber/12;color=#FF4500;display-name=SomeMod;emotes=25:0-4,12-16/1902:6-10;first-msg=0;id=abc-123;mod=1;room-id=111;subscriber=1;tmi-sent-ts=1700000000000;user-id=222 :somemod!somemod@somemod.tmi.twitch.tv PRIVMSG #CoolStreamer :hello there chat";
+        let line = "@badge-info=;badges=moderator/1,subscriber/12;color=#FF4500;display-name=SomeMod;emotes=25:0-4,12-16/1902:6-10;first-msg=0;id=abc-123;mod=1;reply-parent-user-login=SomeOne;room-id=111;subscriber=1;tmi-sent-ts=1700000000000;user-id=222 :somemod!somemod@somemod.tmi.twitch.tv PRIVMSG #CoolStreamer :hello there chat";
         let msg = parse_line(line).unwrap();
         assert_eq!(msg.command, "PRIVMSG");
         let chat = ChatMessage::from_irc(&msg).unwrap();
@@ -271,6 +275,7 @@ mod tests {
         assert_eq!(chat.timestamp, 1700000000000);
         assert_eq!(chat.id, "abc-123");
         assert_eq!(chat.emote_count, 3);
+        assert_eq!(chat.reply_to.as_deref(), Some("someone"));
         assert_eq!(chat.room_id.as_deref(), Some("111"));
         assert_eq!(chat.user_id.as_deref(), Some("222"));
     }

@@ -1,5 +1,5 @@
 export type Severity = "low" | "medium" | "high";
-export type RuleKind = "keyword" | "regex" | "links" | "caps" | "spam" | "repeat" | "firstMessage" | "newAccount";
+export type RuleKind = "keyword" | "regex" | "links" | "caps" | "spam" | "repeat" | "firstMessage" | "newAccount" | "fixation";
 export type FlagKind = "rule" | "automod" | "unbanRequest" | "suspicious";
 export type FlagStatus = "open" | "reviewed" | "dismissed";
 export type ConnStatus = "connecting" | "connected" | "disconnected";
@@ -19,6 +19,8 @@ export interface RuleParams {
   repeatCount: number;
   repeatWindowSecs: number;
   maxAccountAgeDays: number;
+  fixationCount: number;
+  fixationWindowMins: number;
 }
 
 export interface Rule {
@@ -36,6 +38,14 @@ export interface Rule {
   normalize: boolean;
   activeDuring: "always" | "raid";
   params: RuleParams;
+  alsoPatterns: string[];
+  addressedToStreamer: boolean;
+  exceptions: string[];
+  skipSubscribers: boolean;
+  skipAccountsOlderThanDays: number;
+  mode: "active" | "test";
+  wellbeing: boolean;
+  pack: string | null;
 }
 
 export interface RuleMatch {
@@ -44,6 +54,40 @@ export interface RuleMatch {
   severity: Severity;
   terms: string[];
   reason?: string;
+  patterns?: string[];
+  testMode?: boolean;
+  wellbeing?: boolean;
+}
+
+export interface RuleHit {
+  ruleId: number;
+  channel: string;
+  userLogin: string;
+  displayName: string;
+  text: string;
+  terms: string[];
+  reason: string | null;
+  timestamp: number;
+}
+
+export interface PatternStats {
+  pattern: string;
+  flags: number;
+  actioned: number;
+  dismissed: number;
+}
+
+export interface RuleStats {
+  ruleId: number;
+  flags: number;
+  actioned: number;
+  reviewed: number;
+  dismissed: number;
+  open: number;
+  lastFired: number | null;
+  patterns: PatternStats[];
+  testHits: number;
+  testSamples: RuleHit[];
 }
 
 export interface ContextLine {

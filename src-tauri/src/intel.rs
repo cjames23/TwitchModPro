@@ -98,7 +98,7 @@ impl Core {
             if self.new_account_flagged.lock().unwrap().contains(&key) {
                 continue;
             }
-            let matches: Vec<RuleMatch> = {
+            let all: Vec<RuleMatch> = {
                 let engine = self.engine.read().unwrap();
                 engine
                     .evaluate_with(&msg, EvalCtx { raid_mode: self.in_raid_mode(&msg.channel), account_created_at: Some(created) })
@@ -106,6 +106,8 @@ impl Core {
                     .filter(|m| engine.kind_of(m.rule_id) == Some(RuleKind::NewAccount))
                     .collect()
             };
+            let (tests, matches): (Vec<RuleMatch>, Vec<RuleMatch>) = all.into_iter().partition(|m| m.test_mode);
+            self.record_test_hits(&msg, tests);
             let Some(severity) = matches.iter().map(|m| m.severity).max() else { continue };
             self.new_account_flagged.lock().unwrap().insert(key);
             self.add_flag(Flag {
@@ -462,7 +464,7 @@ impl Core {
                     display_name: s(e, "user_name"),
                     text: s(&e["message"], "text"),
                     severity,
-                    matches: vec![RuleMatch { rule_id: 0, rule_name: "AutoMod".into(), severity, terms: vec![], reason: Some(reason) }],
+                    matches: vec![RuleMatch { rule_id: 0, rule_name: "AutoMod".into(), severity, terms: vec![], patterns: vec![], test_mode: false, wellbeing: false, reason: Some(reason) }],
                     context: vec![],
                     context_after: vec![],
                     timestamp: now_ms(),
@@ -547,7 +549,7 @@ impl Core {
                         rule_id: 0,
                         rule_name: "Suspicious user".into(),
                         severity,
-                        terms: vec![],
+                        terms: vec![], patterns: vec![], test_mode: false, wellbeing: false,
                         reason: Some(if reasons.is_empty() { "Flagged by Twitch".into() } else { reasons.join(" · ") }),
                     }],
                     context: vec![],
@@ -587,7 +589,7 @@ impl Core {
                 rule_id: 0,
                 rule_name: "Unban request".into(),
                 severity: Severity::Medium,
-                terms: vec![],
+                terms: vec![], patterns: vec![], test_mode: false, wellbeing: false,
                 reason: None,
             }],
             context: vec![],

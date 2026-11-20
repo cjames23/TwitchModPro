@@ -159,6 +159,66 @@ impl Default for Settings {
     }
 }
 
+/// What a rule in test mode would have flagged.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuleHit {
+    pub rule_id: i64,
+    pub channel: String,
+    pub user_login: String,
+    pub display_name: String,
+    pub text: String,
+    pub terms: Vec<String>,
+    pub reason: Option<String>,
+    pub timestamp: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PatternStats {
+    pub pattern: String,
+    pub flags: i64,
+    pub actioned: i64,
+    pub dismissed: i64,
+}
+
+/// How a rule has performed over a time window.
+#[derive(Debug, Clone, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct RuleStats {
+    pub rule_id: i64,
+    pub flags: i64,
+    /// Ended in a delete, warn, timeout or ban (by you or another mod).
+    pub actioned: i64,
+    /// Marked reviewed with no action.
+    pub reviewed: i64,
+    /// Dismissed: a false alarm.
+    pub dismissed: i64,
+    pub open: i64,
+    pub last_fired: Option<i64>,
+    pub patterns: Vec<PatternStats>,
+    /// Test mode: messages it would have flagged.
+    pub test_hits: i64,
+    pub test_samples: Vec<RuleHit>,
+}
+
+#[derive(PartialEq)]
+enum Outcome {
+    Actioned,
+    Reviewed,
+    Dismissed,
+    Open,
+}
+
+fn outcome(status: &str, resolution: Option<&str>) -> Outcome {
+    match (status, resolution) {
+        ("open", _) => Outcome::Open,
+        ("dismissed", _) => Outcome::Dismissed,
+        (_, Some(r)) if !r.is_empty() => Outcome::Actioned,
+        _ => Outcome::Reviewed,
+    }
+}
+
 pub struct Db {
     conn: Connection,
 }
@@ -265,6 +325,29 @@ impl Db {
                 )
                 .map_err(err)?;
         }
+        if version < 4 {
+            self.conn
+                .execute_batch(
+                    "BEGIN;
+                     ALTER TABLE flags ADD COLUMN archived INTEGER NOT NULL DEFAULT 0;
+                     CREATE INDEX IF NOT EXISTS flags_kind_ts ON flags(kind, ts);
+                     CREATE TABLE IF NOT EXISTS rule_hits (
+                         id INTEGER PRIMARY KEY AUTOINCREMENT,
+                         rule_id INTEGER NOT NULL,
+                         channel TEXT NOT NULL,
+                         user_login TEXT NOT NULL,
+                         display_name TEXT NOT NULL,
+                         text TEXT NOT NULL,
+                         terms TEXT NOT NULL,
+                         reason TEXT,
+                         ts INTEGER NOT NULL
+                     );
+                     CREATE INDEX IF NOT EXISTS rule_hits_rule_ts ON rule_hits(rule_id, ts);
+                     PRAGMA user_version = 4;
+                     COMMIT;",
+                )
+                .map_err(err)?;
+        }
         Ok(())
     }
 
@@ -275,28 +358,50 @@ impl Db {
             .query_row("SELECT value FROM settings WHERE key = 'seeded'", [], |r| r.get(0))
             .optional()
             .map_err(err)?;
-        if seeded.is_some() {
+        if seeded.is_none() {
+            self.seed_starter()?;
+        }
+        self.seed_packs()?;
+        Ok(())
+    }
+
+    /// Add the default rule packs once (in test mode).
+    fn seed_packs(&self) -> DbResult<()> {
+        let done: Option<String> = self
+            .conn
+            .query_row("SELECT value FROM settings WHERE key = 'seeded_packs_v1'", [], |r| r.get(0))
+            .optional()
+            .map_err(err)?;
+        if done.is_some() {
             return Ok(());
         }
-        self.save_rule(&Rule {
-            id: 0,
-            name: "Follower/viewer bot spam".into(),
-            enabled: true,
-            kind: RuleKind::Keyword,
-            patterns: ["free followers", "cheap viewers", "best viewers", "buy followers", "primes and viewers"]
-                .iter()
-                .map(|s| s.to_string())
-                .collect(),
-            whole_word: true,
-            case_sensitive: false,
-            channels: vec![],
-            severity: Severity::High,
-            exempt_privileged: true,
-            target: Default::default(),
-            normalize: true,
-            active_during: Default::default(),
-            params: Default::default(),
-        })?;
+        self.restore_default_packs()?;
+        self.conn
+            .execute("INSERT INTO settings (key, value) VALUES ('seeded_packs_v1', '1')", [])
+            .map_err(err)?;
+        Ok(())
+    }
+
+    /// Add any default pack rule that isn't already present (matched by pack and name). Returns how many were added.
+    pub fn restore_default_packs(&self) -> DbResult<usize> {
+        let existing: Vec<(Option<String>, String)> = self.rules()?.into_iter().map(|r| (r.pack, r.name)).collect();
+        let mut added = 0;
+        for r in crate::packs::default_packs() {
+            if !existing.iter().any(|(p, n)| p == &r.pack && n == &r.name) {
+                self.save_rule(&r)?;
+                added += 1;
+            }
+        }
+        Ok(added)
+    }
+
+    fn seed_starter(&self) -> DbResult<()> {
+        let mut starter = crate::packs::base("Follower/viewer bot spam", RuleKind::Keyword, Severity::High);
+        starter.patterns = ["free followers", "cheap viewers", "best viewers", "buy followers", "primes and viewers"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        self.save_rule(&starter)?;
         self.conn
             .execute("INSERT INTO settings (key, value) VALUES ('seeded', '1')", [])
             .map_err(err)?;
@@ -439,11 +544,11 @@ impl Db {
     }
 
     pub fn flags(&self, limit: i64) -> DbResult<Vec<Flag>> {
-        self.query_flags("1 = 1", params![limit])
+        self.query_flags("archived = 0", params![limit])
     }
 
     pub fn flags_for_user(&self, channel: &str, login: &str, limit: i64) -> DbResult<Vec<Flag>> {
-        self.query_flags("channel = ?2 AND user_login = ?3", params![limit, channel, login])
+        self.query_flags("archived = 0 AND channel = ?2 AND user_login = ?3", params![limit, channel, login])
     }
 
     fn query_flags(&self, filter: &str, args: impl rusqlite::Params) -> DbResult<Vec<Flag>> {
@@ -578,9 +683,128 @@ impl Db {
         Ok(())
     }
 
-    /// Delete every flag that is no longer open.
+    /// Hide every flag that is no longer open. They're kept (archived) for rule tuning stats.
     pub fn clear_closed_flags(&self) -> DbResult<usize> {
-        self.conn.execute("DELETE FROM flags WHERE status != 'open'", []).map_err(err)
+        self.conn
+            .execute("UPDATE flags SET archived = 1 WHERE status != 'open' AND archived = 0", [])
+            .map_err(err)
+    }
+
+    // ---- rule tuning ----
+
+    pub fn insert_rule_hit(&self, hit: &RuleHit) -> DbResult<()> {
+        self.conn
+            .execute(
+                "INSERT INTO rule_hits (rule_id, channel, user_login, display_name, text, terms, reason, ts)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![
+                    hit.rule_id,
+                    hit.channel,
+                    hit.user_login,
+                    hit.display_name,
+                    hit.text,
+                    serde_json::to_string(&hit.terms).map_err(err)?,
+                    hit.reason,
+                    hit.timestamp
+                ],
+            )
+            .map_err(err)?;
+        Ok(())
+    }
+
+    /// Drop test-mode hits older than `before_ms`, and archived flags older than that too.
+    pub fn prune_tuning_data(&self, before_ms: i64) -> DbResult<()> {
+        self.conn.execute("DELETE FROM rule_hits WHERE ts < ?1", params![before_ms]).map_err(err)?;
+        self.conn
+            .execute("DELETE FROM flags WHERE archived = 1 AND ts < ?1", params![before_ms])
+            .map_err(err)?;
+        Ok(())
+    }
+
+    /// Per-rule and per-pattern outcomes since `since_ms`, plus test-mode hits and samples.
+    pub fn rule_stats(&self, since_ms: i64, samples_per_rule: i64) -> DbResult<Vec<RuleStats>> {
+        let mut by_rule: std::collections::BTreeMap<i64, RuleStats> = std::collections::BTreeMap::new();
+        {
+            let mut stmt = self
+                .conn
+                .prepare("SELECT matches, status, resolution, ts FROM flags WHERE kind = 'rule' AND ts >= ?1")
+                .map_err(err)?;
+            let rows = stmt
+                .query_map(params![since_ms], |r| {
+                    Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, Option<String>>(2)?, r.get::<_, i64>(3)?))
+                })
+                .map_err(err)?;
+            for row in rows {
+                let (matches, status, resolution, ts) = row.map_err(err)?;
+                let matches: Vec<RuleMatch> = serde_json::from_str(&matches).unwrap_or_default();
+                let o = outcome(&status, resolution.as_deref());
+                for m in matches {
+                    let st = by_rule.entry(m.rule_id).or_insert_with(|| RuleStats { rule_id: m.rule_id, ..Default::default() });
+                    st.flags += 1;
+                    match o {
+                        Outcome::Actioned => st.actioned += 1,
+                        Outcome::Reviewed => st.reviewed += 1,
+                        Outcome::Dismissed => st.dismissed += 1,
+                        Outcome::Open => st.open += 1,
+                    }
+                    st.last_fired = Some(st.last_fired.map_or(ts, |t| t.max(ts)));
+                    for p in m.patterns {
+                        let ps = match st.patterns.iter_mut().find(|x| x.pattern == p) {
+                            Some(x) => x,
+                            None => {
+                                st.patterns.push(PatternStats { pattern: p.clone(), ..Default::default() });
+                                st.patterns.last_mut().unwrap()
+                            }
+                        };
+                        ps.flags += 1;
+                        if o == Outcome::Actioned {
+                            ps.actioned += 1;
+                        }
+                        if o == Outcome::Dismissed {
+                            ps.dismissed += 1;
+                        }
+                    }
+                }
+            }
+        }
+        let hit_counts: Vec<(i64, i64)> = {
+            let mut stmt = self
+                .conn
+                .prepare("SELECT rule_id, COUNT(*) FROM rule_hits WHERE ts >= ?1 GROUP BY rule_id")
+                .map_err(err)?;
+            let rows = stmt.query_map(params![since_ms], |r| Ok((r.get(0)?, r.get(1)?))).map_err(err)?;
+            rows.collect::<Result<_, _>>().map_err(err)?
+        };
+        for (rule_id, n) in hit_counts {
+            let st = by_rule.entry(rule_id).or_insert_with(|| RuleStats { rule_id, ..Default::default() });
+            st.test_hits = n;
+            let mut stmt = self
+                .conn
+                .prepare(
+                    "SELECT channel, user_login, display_name, text, terms, reason, ts FROM rule_hits
+                     WHERE rule_id = ?1 AND ts >= ?2 ORDER BY ts DESC LIMIT ?3",
+                )
+                .map_err(err)?;
+            let rows = stmt
+                .query_map(params![rule_id, since_ms, samples_per_rule], |r| {
+                    Ok(RuleHit {
+                        rule_id,
+                        channel: r.get(0)?,
+                        user_login: r.get(1)?,
+                        display_name: r.get(2)?,
+                        text: r.get(3)?,
+                        terms: serde_json::from_str(&r.get::<_, String>(4)?).unwrap_or_default(),
+                        reason: r.get(5)?,
+                        timestamp: r.get(6)?,
+                    })
+                })
+                .map_err(err)?;
+            st.test_samples = rows.collect::<Result<_, _>>().map_err(err)?;
+        }
+        for st in by_rule.values_mut() {
+            st.patterns.sort_by(|a, b| b.flags.cmp(&a.flags));
+        }
+        Ok(by_rule.into_values().collect())
     }
 
     // ---- raids ----
@@ -758,11 +982,84 @@ mod tests {
     use super::*;
 
     #[test]
-    fn seeds_starter_rule_once() {
+    fn seeds_starter_rule_and_packs_once() {
         let db = Db::open_in_memory().unwrap();
-        assert_eq!(db.rules().unwrap().len(), 1);
+        let n = 1 + crate::packs::default_packs().len();
+        assert_eq!(db.rules().unwrap().len(), n);
         db.seed_defaults().unwrap();
-        assert_eq!(db.rules().unwrap().len(), 1);
+        assert_eq!(db.rules().unwrap().len(), n);
+        // Deleted pack rules can be restored; existing ones aren't duplicated.
+        let romantic = db.rules().unwrap().into_iter().find(|r| r.name == "Romantic / possessive").unwrap();
+        db.delete_rule(romantic.id).unwrap();
+        assert_eq!(db.restore_default_packs().unwrap(), 1);
+        assert_eq!(db.rules().unwrap().len(), n);
+    }
+
+    #[test]
+    fn rule_stats_count_outcomes_patterns_and_test_hits() {
+        let db = Db::open_in_memory().unwrap();
+        let m = |patterns: &[&str]| RuleMatch {
+            rule_id: 7,
+            rule_name: "r".into(),
+            severity: Severity::Low,
+            terms: vec![],
+            reason: None,
+            patterns: patterns.iter().map(|s| s.to_string()).collect(),
+            test_mode: false,
+            wellbeing: false,
+        };
+        let flag = |ts: i64, status: &str, resolution: Option<&str>, pats: &[&str]| Flag {
+            id: 0,
+            channel: "c".into(),
+            message_id: format!("m{ts}"),
+            user_id: None,
+            user_login: "u".into(),
+            display_name: "u".into(),
+            text: "t".into(),
+            severity: Severity::Low,
+            matches: vec![m(pats)],
+            context: vec![],
+            context_after: vec![],
+            timestamp: ts,
+            status: status.into(),
+            resolution: resolution.map(str::to_string),
+            kind: "rule".into(),
+            external_id: None,
+            meta: serde_json::json!({}),
+        };
+        db.insert_flag(&flag(10, "reviewed", Some("Timed out 10m"), &["a"])).unwrap();
+        db.insert_flag(&flag(11, "dismissed", None, &["b"])).unwrap();
+        db.insert_flag(&flag(12, "dismissed", None, &["b"])).unwrap();
+        db.insert_flag(&flag(13, "reviewed", None, &["a"])).unwrap();
+        db.insert_flag(&flag(14, "open", None, &["a", "b"])).unwrap();
+        db.insert_flag(&flag(1, "dismissed", None, &["a"])).unwrap(); // outside window
+        // Archiving (clearing) keeps flags for stats.
+        assert_eq!(db.clear_closed_flags().unwrap(), 5);
+        assert_eq!(db.flags(100).unwrap().len(), 1);
+
+        db.insert_rule_hit(&RuleHit {
+            rule_id: 9,
+            channel: "c".into(),
+            user_login: "u".into(),
+            display_name: "u".into(),
+            text: "would flag".into(),
+            terms: vec!["flag".into()],
+            reason: None,
+            timestamp: 20,
+        })
+        .unwrap();
+
+        let stats = db.rule_stats(5, 5).unwrap();
+        let r7 = stats.iter().find(|s| s.rule_id == 7).unwrap();
+        assert_eq!((r7.flags, r7.actioned, r7.reviewed, r7.dismissed, r7.open), (5, 1, 1, 2, 1));
+        assert_eq!(r7.last_fired, Some(14));
+        let b = r7.patterns.iter().find(|p| p.pattern == "b").unwrap();
+        assert_eq!((b.flags, b.dismissed), (3, 2));
+        let r9 = stats.iter().find(|s| s.rule_id == 9).unwrap();
+        assert_eq!((r9.test_hits, r9.test_samples[0].text.as_str()), (1, "would flag"));
+
+        db.prune_tuning_data(25).unwrap();
+        assert!(db.rule_stats(0, 5).unwrap().iter().all(|s| s.test_hits == 0));
     }
 
     #[test]
@@ -780,12 +1077,13 @@ mod tests {
         assert!(!c.is_mod);
         assert_eq!(c.broadcaster_id.as_deref(), Some("42"));
 
+        let before = db.rules().unwrap().len();
         let mut rule = db.rules().unwrap().remove(0);
         rule.name = "renamed".into();
         db.save_rule(&rule).unwrap();
         assert_eq!(db.rules().unwrap()[0].name, "renamed");
         db.delete_rule(rule.id).unwrap();
-        assert!(db.rules().unwrap().is_empty());
+        assert_eq!(db.rules().unwrap().len(), before - 1);
     }
 
     #[test]
@@ -830,6 +1128,7 @@ mod tests {
         assert!(db.set_flag_status(id, "bogus").is_err());
         assert_eq!(db.flags(10).unwrap()[0].status, "dismissed");
         assert_eq!(db.clear_closed_flags().unwrap(), 1);
+        assert!(db.flags(10).unwrap().is_empty());
 
         db.insert_raid(&RaidNotice {
             channel: "c".into(),

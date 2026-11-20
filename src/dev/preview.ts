@@ -28,6 +28,8 @@ const params: RuleParams = {
   repeatCount: 3,
   repeatWindowSecs: 60,
   maxAccountAgeDays: 7,
+  fixationCount: 8,
+  fixationWindowMins: 10,
 };
 const DAY = 86_400_000;
 
@@ -63,6 +65,14 @@ const r = (x: Partial<Rule> & Pick<Rule, "id" | "name" | "kind" | "severity">): 
   normalize: true,
   activeDuring: "always",
   params,
+  alsoPatterns: [],
+  addressedToStreamer: false,
+  exceptions: [],
+  skipSubscribers: false,
+  skipAccountsOlderThanDays: 0,
+  mode: "active",
+  wellbeing: false,
+  pack: null,
   ...x,
 });
 let rules: Rule[] = [
@@ -73,6 +83,33 @@ let rules: Rule[] = [
   r({ id: 5, name: "Copy-paste spam", kind: "repeat", severity: "medium" }),
   r({ id: 6, name: "New chatters during raids", kind: "firstMessage", severity: "low", activeDuring: "raid" }),
   r({ id: 7, name: "Bot usernames", kind: "keyword", severity: "high", target: "username", wholeWord: false, patterns: ["hoss00312"] }),
+  r({ id: 20, name: "Stalking / location", kind: "keyword", severity: "high", pack: "Parasocial", mode: "test", patterns: ["i know where you live", "your address", "saw your car"] }),
+  r({ id: 21, name: "Romantic / possessive", kind: "keyword", severity: "medium", pack: "Parasocial", mode: "test", addressedToStreamer: true, patterns: ["marry me", "be my girlfriend", "my wife", "you're mine"] }),
+  r({ id: 22, name: "Personal probing", kind: "keyword", severity: "medium", pack: "Parasocial", mode: "test", addressedToStreamer: true, patterns: ["are you single", "where do you live"] }),
+  r({ id: 23, name: "Fixation on the streamer", kind: "fixation", severity: "low", pack: "Parasocial", mode: "test" }),
+  r({ id: 24, name: "Explicit requests", kind: "keyword", severity: "high", pack: "Sexual content", mode: "test", patterns: ["send nudes", "feet pics", "onlyfans"] }),
+  r({ id: 25, name: "Camera / pose requests", kind: "keyword", severity: "medium", pack: "Sexual content", mode: "test", patterns: ["show us your", "turn around"], alsoPatterns: ["feet", "body"] }),
+  r({ id: 26, name: "Innuendo", kind: "keyword", severity: "low", pack: "Sexual content", mode: "test", enabled: false, patterns: ["daddy", "step on me"] }),
+  r({ id: 27, name: "Self-harm statements", kind: "keyword", severity: "medium", pack: "Wellbeing", mode: "active", wellbeing: true, exemptPrivileged: false, patterns: ["i want to die", "kms"] }),
+  r({ id: 28, name: "Telling someone to die", kind: "keyword", severity: "high", pack: "Harassment", mode: "active", patterns: ["kys", "kill yourself", "go die"] }),
+];
+
+const hit = (ruleId: number, display: string, text: string, terms: string[], ago: number, channel = "pixelqueen") => ({
+  ruleId, channel, userLogin: display.toLowerCase(), displayName: display, text, terms, reason: null, timestamp: now - ago,
+});
+const ruleStats = [
+  { ruleId: 1, flags: 24, actioned: 23, reviewed: 1, dismissed: 0, open: 0, lastFired: now - 2 * 3600_000, patterns: [{ pattern: "free followers", flags: 15, actioned: 15, dismissed: 0 }, { pattern: "cheap viewers", flags: 9, actioned: 8, dismissed: 0 }], testHits: 0, testSamples: [] },
+  { ruleId: 2, flags: 14, actioned: 3, reviewed: 1, dismissed: 10, open: 0, lastFired: now - 3600_000, patterns: [{ pattern: "the ending", flags: 11, actioned: 1, dismissed: 9 }, { pattern: "spoiler", flags: 3, actioned: 2, dismissed: 1 }], testHits: 0, testSamples: [] },
+  { ruleId: 3, flags: 6, actioned: 4, reviewed: 1, dismissed: 1, open: 0, lastFired: now - 5 * DAY, patterns: [{ pattern: "grow-fast.xyz", flags: 4, actioned: 4, dismissed: 0 }], testHits: 0, testSamples: [] },
+  { ruleId: 28, flags: 3, actioned: 3, reviewed: 0, dismissed: 0, open: 0, lastFired: now - 2 * DAY, patterns: [{ pattern: "kys", flags: 3, actioned: 3, dismissed: 0 }], testHits: 0, testSamples: [] },
+  { ruleId: 21, flags: 0, actioned: 0, reviewed: 0, dismissed: 0, open: 0, lastFired: null, patterns: [], testHits: 7, testSamples: [
+    hit(21, "lonely_larry", "pixelqueen marry me pls 🥺", ["marry me"], 40 * 60_000),
+    hit(21, "Mika", "you're mine forever queen", ["you're mine"], 3 * 3600_000),
+    hit(21, "NightOwl", "@pixelqueen my wife would love this game", ["my wife"], 9 * 3600_000),
+  ] },
+  { ruleId: 25, flags: 0, actioned: 0, reviewed: 0, dismissed: 0, open: 0, lastFired: null, patterns: [], testHits: 2, testSamples: [
+    hit(25, "creepy_carl", "show us your feet", ["show us your", "feet"], 2 * DAY, "cozycafe"),
+  ] },
 ];
 let settings: Settings = {
   notifyFlags: true,
@@ -94,6 +131,13 @@ let settings: Settings = {
 };
 const ctx = (name: string, text: string, ago: number) => ({ displayName: name, text, timestamp: now - ago });
 let flags: Flag[] = [
+  {
+    id: 8, channel: "cozycafe", messageId: "wb1", userId: "u8", userLogin: "quiet_quinn", displayName: "quiet_quinn",
+    text: "honestly some days i want to die lol", severity: "medium",
+    matches: [{ ruleId: 27, ruleName: "Self-harm statements", severity: "medium", terms: ["i want to die"], wellbeing: true }],
+    context: [], contextAfter: [], timestamp: now - 10_000, status: "open", resolution: null,
+    kind: "rule", externalId: null, meta: {},
+  },
   {
     id: 4, channel: "pixelqueen", messageId: "m4", userId: "u4", userLogin: "promo_bot_77", displayName: "promo_bot_77",
     text: "Want to grow? Get FR33 F0LL0WERS and cheap viewers at grow-fast.xyz", severity: "high",
@@ -127,7 +171,7 @@ let flags: Flag[] = [
     kind: "rule", externalId: null, meta: {},
   },
 ];
-flags[0].meta = { accountCreatedAt: now - 2 * DAY };
+flags.find((f) => f.id === 4)!.meta = { accountCreatedAt: now - 2 * DAY };
 flags.unshift(
   {
     id: 7, channel: "cozycafe", messageId: "am1", userId: "u7", userLogin: "grumpy_gus", displayName: "Grumpy_Gus",
@@ -247,6 +291,10 @@ mockIPC(
         rules = rule.id ? rules.map((x) => (x.id === rule.id ? rule : x)) : [...rules, { ...rule, id: rules.length + 10 }];
         return rules;
       }
+      case "rule_stats":
+        return ruleStats;
+      case "restore_default_packs":
+        return rules;
       case "delete_rule":
         rules = rules.filter((x) => x.id !== args.id);
         return rules;

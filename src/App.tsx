@@ -24,13 +24,14 @@ import { LiveChats } from "./components/LiveChats";
 import { RaidBanner, RaidLog } from "./components/Raids";
 import { Rules } from "./components/Rules";
 import { SettingsPanel } from "./components/SettingsPanel";
+import { Tuning } from "./components/Tuning";
 import { LoginScreen } from "./components/LoginScreen";
 import { UserPanel } from "./components/UserPanel";
 import type { ActionHandlers } from "./components/ModActions";
 import type { WaveHandlers } from "./components/WaveCard";
 import type { InboxHandlers } from "./components/FlagQueue";
 
-type Tab = "flags" | "chat" | "raids" | "rules" | "settings";
+type Tab = "flags" | "chat" | "raids" | "rules" | "tuning" | "settings";
 const MAX_FLAGS = 500;
 const MAX_RAIDS = 200;
 const MAX_CHAT_PER_CHANNEL = 200;
@@ -64,6 +65,7 @@ export default function App() {
   const [ages, setAges] = useState<Record<string, number>>({});
   const [deleted, setDeleted] = useState<Set<string>>(new Set());
   const [inboxConnected, setInboxConnected] = useState<boolean | null>(null);
+  const [editRuleId, setEditRuleId] = useState<number | null>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [now, setNow] = useState(Date.now());
 
@@ -283,6 +285,7 @@ export default function App() {
     { id: "chat", label: "Live chat" },
     { id: "raids", label: "Raids", count: unackedRaids },
     { id: "rules", label: "Rules" },
+    { id: "tuning", label: "Tuning" },
     { id: "settings", label: "Alerts" },
   ];
 
@@ -317,7 +320,14 @@ export default function App() {
         <RaidBanner raids={raids} onDismiss={ackRaids} />
         <nav className="tabs">
           {tabs.map((t) => (
-            <button key={t.id} className={tab === t.id ? "on" : ""} onClick={() => setTab(t.id)}>
+            <button
+              key={t.id}
+              className={tab === t.id ? "on" : ""}
+              onClick={() => {
+                setTab(t.id);
+                if (t.id !== "rules") setEditRuleId(null);
+              }}
+            >
               {t.label}
               {!!t.count && <span className={`tab-count ${t.id}`}>{t.count}</span>}
             </button>
@@ -353,7 +363,18 @@ export default function App() {
             />
           )}
           {tab === "raids" && <RaidLog raids={raids} channelFilter={selected} now={now} />}
-          {tab === "rules" && <Rules rules={rules} channels={channels} onRulesChanged={setRules} />}
+          {tab === "rules" && <Rules rules={rules} channels={channels} onRulesChanged={setRules} editRuleId={editRuleId} />}
+          {tab === "tuning" && (
+            <Tuning
+              rules={rules}
+              onRulesChanged={setRules}
+              toast={toast}
+              onEditRule={(r) => {
+                setEditRuleId(r.id);
+                setTab("rules");
+              }}
+            />
+          )}
           {tab === "settings" && <SettingsPanel settings={settings} onChange={updateSettings} />}
         </div>
       </main>

@@ -215,6 +215,7 @@ pub fn test_rule(rule: Rule, text: String, username: Option<String>, first_messa
         is_subscriber: false,
         is_first_msg: first_message.unwrap_or(false),
         emote_count: 0,
+        reply_to: None,
         timestamp: now_ms(),
     };
     let engine = RuleEngine::new(&[rule.clone()]);
@@ -225,6 +226,20 @@ pub fn test_rule(rule: Rule, text: String, username: Option<String>, first_messa
         }
     }
     Ok(engine.evaluate(&msg, true))
+}
+
+/// How each rule has performed over the last `days` days.
+#[tauri::command]
+pub fn rule_stats(state: State<AppState>, days: i64) -> Result<Vec<crate::db::RuleStats>, String> {
+    let since = now_ms() - days.clamp(1, 90) * 86_400_000;
+    state.core.db.lock().unwrap().rule_stats(since, 8)
+}
+
+/// Re-add any default pack rules that were deleted (in test mode).
+#[tauri::command]
+pub fn restore_default_packs(state: State<AppState>) -> Result<Vec<Rule>, String> {
+    state.core.db.lock().unwrap().restore_default_packs()?;
+    rebuild_engine(&state.core)
 }
 
 // ---------------- flags & raids ----------------

@@ -14,6 +14,7 @@ import type {
   RaidModes,
   Rule,
   RuleMatch,
+  RuleStats,
   Settings,
   Snapshot,
   UserHistory,
@@ -44,6 +45,8 @@ export const api = {
   deleteRule: (id: number) => invoke<Rule[]>("delete_rule", { id }),
   testRule: (rule: Rule, text: string, username: string, firstMessage: boolean) =>
     invoke<RuleMatch[]>("test_rule", { rule, text, username, firstMessage }),
+  ruleStats: (days: number) => invoke<RuleStats[]>("rule_stats", { days }),
+  restoreDefaultPacks: () => invoke<Rule[]>("restore_default_packs"),
 
   // flags, raids, settings
   setFlagStatus: (id: number, status: string) => invoke<void>("set_flag_status", { id, status }),

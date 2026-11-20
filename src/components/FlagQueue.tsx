@@ -157,7 +157,8 @@ export function FlagQueue(p: Props) {
       const idx = Math.max(0, visible.findIndex((f) => f.id === current?.id));
       const f = current;
       const target = f && { channel: f.channel, userLogin: f.userLogin, userId: f.userId, messageId: f.messageId || undefined };
-      const canAct = f && modIn.has(f.channel) && f.status === "open";
+      const wellbeing = f && f.matches.length > 0 && f.matches.every((m) => m.wellbeing);
+      const canAct = f && modIn.has(f.channel) && f.status === "open" && !wellbeing;
       const isInbox = f && (f.kind === "automod" || f.kind === "unbanRequest");
       const handled = () => e.preventDefault();
       switch (key.toLowerCase()) {
@@ -282,6 +283,7 @@ export function FlagQueue(p: Props) {
           const isOpen = expanded === f.id;
           const canAct = modIn.has(f.channel) && f.status === "open";
           const isInbox = f.kind === "automod" || f.kind === "unbanRequest";
+          const wellbeing = f.matches.length > 0 && f.matches.every((m) => m.wellbeing);
           const created = f.meta?.accountCreatedAt ?? intel.ages[f.userLogin];
           const others = otherChannelNotes(intel.byLogin, f.channel, f.userLogin);
           const selectedNow = current?.id === f.id;
@@ -290,7 +292,7 @@ export function FlagQueue(p: Props) {
             <article
               key={f.id}
               data-flag={f.id}
-              className={`flag-card sev-${f.severity} status-${f.status} kind-${f.kind} ${selectedNow ? "selected" : ""}`}
+              className={`flag-card sev-${f.severity} status-${f.status} kind-${f.kind} ${wellbeing ? "wellbeing" : ""} ${selectedNow ? "selected" : ""}`}
               onClick={() => setSelected(f.id)}
             >
               <div className="flag-top">
@@ -298,6 +300,7 @@ export function FlagQueue(p: Props) {
                   #{f.channel}
                 </span>
                 {f.kind !== "rule" && <span className={`kind-tag ${f.kind}`}>{KIND_LABEL[f.kind].replace(/s$/, "")}</span>}
+                {wellbeing && <span className="kind-tag wellbeing">Wellbeing check</span>}
                 <span className={`sev-badge ${f.severity}`}>{f.severity}</span>
                 {f.kind === "rule" &&
                   f.matches.map((m) => (
@@ -317,6 +320,12 @@ export function FlagQueue(p: Props) {
                 <span className="msg-text">{f.text ? highlight(f.text, terms) : <em className="muted-text">(no message)</em>}</span>
               </div>
               {reasons.length > 0 && <div className="reasons">{reasons.join(" · ")}</div>}
+              {wellbeing && (
+                <div className="wellbeing-note">
+                  This chatter may be struggling. Consider checking in with them or letting the streamer know, rather than
+                  punishing them.
+                </div>
+              )}
 
               {(created || others.length > 0) && (
                 <div className="intel-notes">
@@ -377,7 +386,7 @@ export function FlagQueue(p: Props) {
                     {!isInbox && <button onClick={() => p.onStatus(f.id, "open")}>Reopen</button>}
                   </>
                 )}
-                {canAct && (
+                {canAct && !wellbeing && (
                   <>
                     {!isInbox && <span className="divider" />}
                     {isInbox ? (

@@ -246,6 +246,7 @@ mod tests {
             is_subscriber: false,
             is_first_msg: false,
             emote_count: 0,
+            reply_to: None,
             timestamp: ts,
         }
     }
