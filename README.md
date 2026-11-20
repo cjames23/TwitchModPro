@@ -1,151 +1,340 @@
 # Twitch Mod Pro
 
-A desktop app for Twitch moderators who watch several chats at once. It flags messages that match your rules, tells you which channel they came from, alerts you when a stream you're watching gets raided, and lets you delete, time out or ban without leaving the app.
+**One window for moderating all the Twitch chats you mod.**
 
-Built with [Tauri 2](https://tauri.app) (Rust backend) and React + TypeScript.
+If you mod several streamers, you know the drill: a dozen chat tabs, scrolling fast, hoping you spot the problem message in time. Twitch Mod Pro watches every chat you moderate at once and pulls anything that needs your attention into **one queue**: rule matches, AutoMod holds, unban requests, spam waves and raids. You can deal with each item right there: delete, warn, time out or ban, without switching tabs.
 
-## Features
+**[⬇ Download the latest version](https://github.com/cjames23/TwitchModPro/releases)** for macOS, Windows or Linux.
 
-- **Log in with Twitch.** Uses the OAuth device code flow: the app shows a code, you approve it on twitch.tv, and your login is stored in the OS keychain. The token is checked at startup and every 30 minutes, and refreshed automatically.
-- **Only channels you moderate.** The channel picker lists only the channels Twitch says you moderate, plus your own, and the backend refuses anything else. Mod status is re-checked every 30 minutes. If you lose mod status in a channel, the app stops monitoring it and marks it in the sidebar.
-- **Rules**, each with a severity, a channel scope, an option to ignore mods/VIPs/the broadcaster, and a live tester:
-  - **Words & phrases** and **regular expressions**, matched against the message or the sender's **username**
-  - **Catch disguised spellings:** undoes leetspeak (`fr33`), full-width and stylized letters (`ｆｒｅｅ`, `𝐟𝐫𝐞𝐞`), Cyrillic/Greek lookalikes, accents and hidden zero-width characters. Matches still highlight the original text.
-  - **Links**, with a list of allowed domains (catches `site dot com` too)
-  - **Excessive caps** (percentage and minimum length)
-  - **Symbol & emote spam** (long runs of one character, too many emotes, ASCII art)
-  - **Repeated messages** (the same user sending the same text N times within a time window)
-  - **First-time chatters**
-  - **Raid mode only:** a rule runs only during raid mode
-- **Flag queue.** Shows the channel, user, matched rules, highlighted terms and the reason a built-in check fired. Context includes the 8 messages before the flag and the 5 after it. Delete, Timeout (1m/10m/1h/24h/7d) and Ban work right from the card, and a flag closes itself with a note such as "Timed out 10m".
-- **User panel.** Click any username to see their recent messages, past flags, and the actions taken against them from this app. You can delete individual messages, time out, ban or unban.
-- **Cross-channel awareness.** Every flag shows the account's age and any warns, timeouts or bans of that user in your *other* channels, whether you did them or another mod did (seen in chat). The live chat marks users with a record elsewhere, and the user panel lists their history across channels.
-- **Ban everywhere.** The ban prompt has an "All my channels" option that bans the user in every monitored channel you moderate.
-- **New-account rule.** Flags accounts younger than N days. The app looks up account ages from Twitch in batches, about a second after someone's first message, and flags a user once per channel.
-- **Spam-wave detection.** Finds groups of accounts that post the same message (after undoing disguises and ignoring numbers), have look-alike names (`hoss00312_1`, `_2`…), or chat for the first time all at once. Each wave shows as one card with **Ban all / Time out all**, a list where you can untick accounts, **Undo** (unbans everyone the app acted on), and **Not spam** (ignores that pattern for 30 minutes). You set the sensitivity in Alerts.
-- **Twitch inbox.** Through EventSub, the queue also gets **AutoMod held messages** (Approve/Deny), **unban requests** (Unban/Deny, with an optional reply), and **suspicious-user messages** (likely ban evaders, restricted users, shared-ban matches). Pending unban requests load at startup. When another mod handles an item on Twitch, the card closes by itself.
-- **Escalation ladder.** The suggested next action is based on the user's prior offenses in that channel within a time window. The default ladder is Warn → Timeout 10m → Timeout 24h → Ban, and you can edit it. Warn uses Twitch's warning, which the user has to acknowledge before chatting again.
-- **Keyboard shortcuts** in the flag queue:
-  - `J`/`K` to move between flags
-  - `Enter` for the suggested action
-  - `W` Warn, `T` Timeout, `B` Ban, `X` Delete message
-  - `R` Reviewed, `D` Dismiss
-  - `A`/`N` to approve or deny AutoMod messages and unban requests
-  - `U` to open the user panel, `C` for context
-  - `?` to show the list
-- **Default rule packs**, which start in test mode:
-  - **Parasocial:** stalking/location, romantic/possessive, personal probing, jealousy/entitlement, and fixation (one user talking to the streamer over and over)
-  - **Sexual content:** explicit requests, body comments, camera/pose requests, and innuendo (off by default)
-  - **Harassment:** telling someone to die
-  - **Wellbeing:** self-harm statements, shown as a check-in with no punishment
-  - **Chat quality:** backseating (off by default)
+> **Early test version.** Things may break. Please report problems or ideas in [Issues](https://github.com/cjames23/TwitchModPro/issues).
 
-  Deleted pack rules can be brought back from the Tuning view.
-- **Rule options:**
-  - "Must also contain" (a second word list that also has to match)
-  - "Only messages to the streamer" (their name, @, or "you"; replies to other chatters don't count)
-  - exception phrases
-  - ignore subscribers
-  - ignore accounts older than N days
-  - wellbeing mode
-- **Test mode:** a rule in test mode records what it *would* have flagged without touching your queue. New rules start in test mode.
-- **Tuning view:**
-  - per-rule and per-word stats over 7 or 30 days: flags, acted on, dismissed, accuracy
-  - test-mode examples
-  - one-click suggestions: remove a noisy word, lower or raise severity, send a rule back to test mode, turn on a tested rule
-  - quick exception phrases
+---
 
-  Cleared flags are archived instead of deleted, so they still count, and tuning data is kept for 30 days.
-- **Per-channel settings** (⚙ next to each channel):
-  - **color:** channels get distinct colors from a 12-color palette, or you can pick any color
-  - **alert level:** my default / everything / medium+ / high only / off (queue only)
-  - **sound** on or off
-  - **shoutout chat message**
+- [Getting started](#getting-started)
+- [A quick tour](#a-quick-tour)
+- [How it works](#how-it-works): flags, rules, test mode, **raid mode**, spam waves, alerts…
+- [Keyboard shortcuts](#keyboard-shortcuts)
+- [Your data and privacy](#your-data-and-privacy)
+- [What Twitch doesn't allow](#what-twitch-doesnt-allow)
+- [Troubleshooting](#troubleshooting)
+- [For developers](#for-developers)
 
-- **Alerts by channel** (Alerts tab, or "Choose alerts per rule" in a channel's ⚙): pick a streamer, then set every rule, or a whole pack at once, to follow that channel's level, **always** alert, or **never** alert. Each streamer's chat is configured independently. A 🔔 column shows what will actually alert there.
-- **Shoutouts.** A 📣 Shoutout button on raid alerts and in the raid log sends Twitch's native `/shoutout`, plus an optional per-channel chat message such as `!so @{raider}`.
-- **Mod log.** Every mod action in your channels, by any moderator, as Twitch reports it live. You can filter by type and by mod.
-- **Activity feed.** Follows, subs, resubs, gift subs, bits and announcements across your channels.
-- **Raid alerts and raid mode.** A banner and notification show which channel was raided, by whom, and with how many viewers. Raid mode turns on automatically for a few minutes after a raid (configurable), and you can start or end it by hand with ⚡ in the sidebar.
-- **Live chat.** One column per channel, with flagged lines highlighted. Click a name to open the user panel.
-- **Alerts.**
-  - desktop notifications and sounds
-  - minimum severity for flag alerts
-  - minimum raid size for raid alerts
-  - per-channel mute
-  - a per-channel cooldown
+---
 
-Data is stored locally in SQLite under the OS app-data folder (`~/Library/Application Support/com.twitchmodpro.app/` on macOS). Login tokens are kept in the OS keychain, never in the database.
+## Getting started
+
+### 1. Install
+
+Download the file for your computer from the [Releases page](https://github.com/cjames23/TwitchModPro/releases):
+
+| Your computer | Download | Then |
+|---|---|---|
+| **Mac** (any) | the `.dmg` | Open it and drag **Twitch Mod Pro** into Applications. |
+| **Windows** | the `-setup.exe` | Run it. |
+| **Linux** | the `.AppImage` (or `.deb` / `.rpm`) | Make the AppImage executable and run it. |
+
+The app isn't code-signed yet, so the first time you open it your computer will warn you:
+
+- **Mac:** if it says it can't check the app, go to **System Settings → Privacy & Security**, scroll down and click **Open Anyway**. If it says the app is *damaged*, run this once in Terminal, then open it again:
+  ```bash
+  xattr -dr com.apple.quarantine "/Applications/Twitch Mod Pro.app"
+  ```
+- **Windows:** if you see "Windows protected your PC", click **More info → Run anyway**.
+
+### 2. Connect it to Twitch (about a minute, once)
+
+Twitch only tells approved apps which channels you moderate, so the app needs a **Client ID**. It's free:
+
+1. Go to **[dev.twitch.tv/console/apps/create](https://dev.twitch.tv/console/apps/create)** and log in.
+2. Fill in the form:
+   - **Name:** anything, e.g. "My Mod Tool". Twitch may reject names containing "Twitch".
+   - **OAuth Redirect URLs:** `http://localhost`
+   - **Category:** Application Integration
+   - **Client Type:** **Public** (important)
+3. Click **Create**, then **Manage**, and copy the **Client ID**.
+4. Paste it into the app.
+
+### 3. Log in and add your channels
+
+1. Click **Log in with Twitch**. A Twitch page opens in your browser showing a code. Check it matches the one in the app, then click **Authorize**.
+2. Click **+ Add channel**. You'll see every channel you moderate, plus your own. Add the ones you want to watch.
+
+That's it. Flags start appearing as chat happens.
+
+> **Tip:** the built-in rule packs (parasocial, sexual content, harassment and more) start in **test mode**, so they won't fill your queue on day one. After a stream, open the **Tuning** tab to see what they *would* have caught and switch on the ones that look right.
+
+---
+
+## A quick tour
+
+| Tab | What it's for |
+|---|---|
+| **Flags** | Your to-do list. Every message that needs a look, from every channel, newest first. Act on it right from the card. |
+| **Live chat** | Every channel's chat side by side, with flagged lines highlighted. Click a name to see that person's history. |
+| **Activity** | Follows, subs, gift subs, bits and announcements across your channels. |
+| **Mod log** | Everything any mod did in your channels (bans, timeouts, deletes, chat setting changes), with who did it. |
+| **Raids** | Every raid on your channels, with a **📣 Shoutout** button. |
+| **Rules** | What gets flagged. Edit the built-in rules or make your own. |
+| **Tuning** | How well each rule is working, with suggestions to make it less noisy. |
+| **Alerts** | When the app should pop up a notification or play a sound, overall and for each streamer. |
+
+The **sidebar** lists your channels. Click one to show only that channel everywhere. Each channel has:
+- a **⚙** button for its color, alert settings and shoutout message
+- a **🔔** button to quickly mute its alerts
+- a **⚡** button to start raid mode by hand
+
+---
+
+## How it works
+
+### Flags
+
+A **flag** is a message the app thinks you should look at. Each one shows:
+
+- **which channel** it's from (color-coded) and **who** sent it
+- **why** it was flagged, with the matching words highlighted
+- the **severity**: low, medium or high
+- **notes about the user:** how old their account is, and whether they've been warned, timed out or banned in your *other* channels
+- the conversation **before and after** (click *Context*)
+
+From the card you can **Delete** the message, **Warn**, **Timeout** or **Ban** the user, or mark the flag **Reviewed** or **Dismiss** it. When you take an action, the flag closes itself with a note like "Timed out 10m". If another mod deals with the user on Twitch, the flag closes too.
+
+### The Twitch inbox
+
+Besides your own rules, the flag queue also collects items Twitch is already holding for mods:
+
+- **AutoMod** messages waiting for approval: **Approve** or **Deny**
+- **Unban requests**: **Unban** or **Deny**, with an optional reply
+- **Suspicious users**: people Twitch thinks may be evading a ban, or who are restricted or banned in channels that share ban info
+
+### Rules
+
+A **rule** describes what to flag. There are several kinds:
+
+| Kind | Flags… |
+|---|---|
+| **Words & phrases** | messages (or usernames) containing any word on your list |
+| **Links** | any link, except to domains you allow |
+| **Excessive caps** | MESSAGES THAT ARE MOSTLY CAPITALS |
+| **Symbol & emote spam** | aaaaaaaaaa, emote walls, ASCII art |
+| **Repeated messages** | the same person sending the same thing over and over |
+| **First-time chatters** | someone's first-ever message in the channel |
+| **New accounts** | accounts created in the last few days |
+| **Fixation on the streamer** | one person talking to the streamer over and over in a short time |
+| **Regular expression** | advanced pattern matching |
+
+Useful options on a rule:
+- **Catch disguised spellings:** also catches tricks like `fr33`, `ｆｒｅｅ` and lookalike letters.
+- **Who it's aimed at:** *anyone*, *not another chatter* (skips replies to other people), or *clearly the streamer*.
+- **Exceptions:** phrases that should never trigger it, e.g. "die hard" for a rule about "die".
+- **Ignore mods, VIPs and the broadcaster**, ignore subscribers, or ignore older accounts.
+- **Only during raid mode:** see [Raid mode](#raid-mode).
+
+Every rule has a **Try it** box, so you can type a sample message and see whether it would be flagged before saving.
+
+### Built-in rule packs
+
+The app comes with ready-made rules, grouped into packs:
+
+- **Parasocial:** stalking or location questions ("I know where you live"), romantic or possessive messages ("marry me", "you're mine"), personal probing ("are you single?"), jealousy and entitlement ("why are you ignoring me"), and fixation (one person messaging the streamer again and again).
+- **Sexual content:** explicit requests, comments about the streamer's body, camera or pose requests, and innuendo (off by default).
+- **Harassment:** telling someone to die.
+- **Wellbeing:** self-harm statements. These show up as a **wellbeing check**, a gentle prompt to check in with the person, never a punishment.
+- **Chat quality:** backseating ("go left", "wrong way"; off by default).
+
+All packs start in **test mode**. If you delete one by accident, **Tuning → Restore default rules** brings it back.
+
+### Test mode and tuning
+
+A rule in **test mode** doesn't create flags. It quietly records what it *would* have flagged. That way you can see how a rule behaves in *your* chats before it starts adding to your queue. New rules start in test mode too.
+
+The **Tuning** tab shows, for each rule:
+- how many times it fired
+- how often you **acted on** those flags compared with how often you **dismissed** them (accuracy)
+- the same numbers for **each word** in the rule
+
+It also makes suggestions you can apply with one click:
+- "this word gets dismissed 9 times out of 10, remove it?"
+- "this rule is mostly false alarms, lower its severity?"
+- "this test rule looks good, turn it on?"
+
+### Raid mode
+
+**Raid mode is a short "high alert" period for one channel, usually right after it's been raided.**
+
+When a big group of new viewers arrives at once, it's a good time for extra caution: brand-new accounts, people chatting for the first time, and in a bad raid, a wave of trolls. Raid mode lets you have **rules that only run during that window**, so they don't bother you the rest of the stream.
+
+- **Turning it on:** it starts **automatically** when a channel you watch is raided, and lasts **5 minutes** by default. You can change the length (or turn automatic raid mode off with 0) in **Alerts → Raids**. You can also start it **by hand** with the **⚡** button next to a channel, for example if a raid-like flood happens without an actual raid.
+- **While it's on:** the channel shows **⚡ Raid mode** with a countdown in the sidebar. Every rule with **"Only during raid mode"** ticked is switched on for that channel only.
+- **Turning it off:** it ends when the countdown runs out, or right away with **End**.
+
+To use raid mode, open a rule and tick **Only during raid mode**. Good candidates are **First-time chatters** and **New accounts** rules, which would be far too noisy all the time but are useful in the minutes after a raid. None of the built-in packs use raid mode yet, so add these yourself.
+
+> Raid mode only changes **which rules are active in this app**. It doesn't change the channel's settings on Twitch (followers-only, slow mode, etc.).
+
+### Raids and shoutouts
+
+When a channel you watch is raided, a banner appears at the top of the app, along with a desktop notification. Both show **which channel** was raided, **who** raided, and with **how many viewers**. Click **📣 Shoutout** to send Twitch's own shoutout for the raider. If the channel uses a bot command instead, set a chat message such as `!so @{raider}` in the channel's ⚙ settings and the app sends it too.
+
+Twitch's rules apply:
+- the channel has to be live
+- one shoutout every 2 minutes per channel
+- the same streamer once an hour
+
+### Spam waves
+
+A **spam wave** is many different accounts doing the same thing at once, the usual pattern of bot attacks and hate raids. The app spots:
+- many accounts posting the **same message**, even with small changes
+- many accounts with **look-alike names** (`hoss00312_1`, `hoss00312_2`…)
+- a sudden **burst of first-time chatters**
+
+A wave shows up as one card at the top of the flag queue. From it you can:
+- **Ban all** or **Time out all**, after unticking anyone who shouldn't be included
+- **Undo** to unban everyone the app just acted on
+- mark it **Not spam** to ignore that pattern for 30 minutes
+
+### Repeat offenders
+
+The app remembers what's happened to each user, in this channel and your others. The highlighted button on each flag suggests the **next step** for that person, based on how many times they've been dealt with recently:
+
+**1st offense:** Warn → **2nd:** Timeout 10 min → **3rd:** Timeout 24 h → **4th:** Ban
+
+You can change these steps in **Alerts → Escalation ladder**. A **Warn** is Twitch's official warning, which the user has to acknowledge before they can chat again.
+
+To ban someone from **every** channel you moderate at once, tick **All my channels** in the ban prompt.
+
+### Alerts
+
+Every flag lands in the queue. **Alerts** decide which ones also pop up a desktop notification and play a sound.
+
+- **Your default** (Alerts tab): e.g. "medium and high".
+- **Per streamer** (⚙ next to a channel): *my default*, *everything*, *medium and high*, *high only*, or *off*. Off means queue only.
+- **Per rule, per streamer** (Alerts → **Alerts by channel**): set any rule, or a whole pack, to *always* or *never* alert in that streamer's chat. A 🔔 column shows exactly what will alert.
+
+For example: backseating could alert you in a speedrunner's chat but stay quiet in a chill art stream.
+
+---
+
+## Keyboard shortcuts
+
+In the **Flags** tab (press **?** to see this list in the app):
+
+| Key | Does |
+|---|---|
+| **J** / **K** (or ↓ / ↑) | Next / previous flag |
+| **Enter** | The suggested action |
+| **W** · **T** · **B** | Warn · Timeout · Ban |
+| **X** | Delete the message |
+| **R** · **D** | Mark reviewed · Dismiss |
+| **A** · **N** | Approve · Deny (AutoMod and unban requests) |
+| **U** | Open the user's history |
+| **C** | Show the conversation around the message |
+
+---
+
+## Your data and privacy
+
+- Everything (your channels, rules, flags and history) is stored **only on your computer**:
+  - macOS: `~/Library/Application Support/com.twitchmodpro.app/`
+  - Windows: `%APPDATA%\com.twitchmodpro.app\`
+  - Linux: `~/.local/share/com.twitchmodpro.app/`
+- Your Twitch login is kept in your system's **keychain** (macOS Keychain, Windows Credential Manager, or the Linux keyring), never in a plain file.
+- The app only talks to **Twitch**. There's no server, account or analytics.
+- It only asks Twitch for **moderator** permissions. It never gets access to a streamer's account.
+
+---
 
 ## What Twitch doesn't allow
 
-The app signs in as a moderator, so some Mod View panels can't be offered by any third-party tool. Predictions, the channel point reward queue, polls and hype trains need permissions that Twitch only grants to the broadcaster's own login. Shoutouts, the mod log and the activity feed also come with Twitch-imposed limits. **[docs/twitch-limitations.md](docs/twitch-limitations.md)** explains each one and why.
+Because the app logs in as a **moderator**, some things in Twitch's Mod View can't be offered: **predictions, polls, the channel point reward queue and hype trains**. Twitch only gives those to the streamer's own login. **[docs/twitch-limitations.md](docs/twitch-limitations.md)** lists each limit and explains why.
 
-## First-time setup: Twitch Client ID
+---
 
-Twitch only shares mod status with registered applications, so each install needs a Client ID:
+## Troubleshooting
 
-1. Go to <https://dev.twitch.tv/console/apps/create> and register an application:
-   - **OAuth Redirect URL:** `http://localhost` (unused by the device code flow, but required by the form)
-   - **Category:** Application Integration
-   - **Client Type:** **Public**
-2. Paste the Client ID into the app's login screen.
+**I can't add a channel.**
+You can only add channels where you're a moderator, or your own. If you were just made a mod, click **↻** in the channel picker to refresh.
 
-To ship a build with your Client ID baked in, so users skip this step, set it at build time:
+**A channel says "Not a mod here".**
+Twitch says you're no longer a moderator there, so the app stopped watching it. Remove it, or ask the streamer to re-mod you.
 
-```bash
-TWITCH_CLIENT_ID=your_client_id npm run tauri build
-```
+**It asks me to log in again.**
+This is normal after an update that needs a new Twitch permission, or roughly once a month, when Twitch's login expires for apps like this one.
 
-Scopes requested (all moderator-level; see [docs/twitch-limitations.md](docs/twitch-limitations.md) for what each is for): `user:read:moderated_channels`, `moderator:manage:chat_messages`, `moderator:manage:banned_users`, `moderator:manage:warnings`, `moderator:manage:automod`, `moderator:manage:unban_requests`, `moderator:read:suspicious_users`, `moderator:manage:shoutouts`, `user:write:chat`, `moderator:read:followers`, `moderator:read:blocked_terms`, `moderator:read:chat_settings`, `moderator:read:moderators`, `moderator:read:vips`. If you logged in before some of these were added, the app asks you to log in again.
+**I'm not getting notifications.**
+Check the channel isn't muted (🔔 icon) or set to **Off**, check your Alerts tab defaults, and make sure your system allows notifications from Twitch Mod Pro.
 
-## Running it
+**"Couldn't turn on the AutoMod inbox / mod log" for a channel.**
+Usually the broadcaster has limited what mods can do, or you need to log in again for a new permission.
 
-Prerequisites: [Rust](https://rustup.rs), Node.js 20+, and the [Tauri system dependencies](https://tauri.app/start/prerequisites/) for your OS.
+**Linux: it won't remember my login.**
+The app stores your login in the system keyring. Make sure GNOME Keyring, KWallet or another Secret Service provider is running.
+
+---
+
+## For developers
+
+<details>
+<summary>Building, testing and releasing</summary>
+
+Built with [Tauri 2](https://tauri.app) (Rust) and React + TypeScript.
+
+**Requirements:** [Rust](https://rustup.rs), Node.js 20+, and the [Tauri system dependencies](https://tauri.app/start/prerequisites/) for your OS.
 
 ```bash
 npm install
 npm run tauri dev      # run in development
-npm run tauri build    # build an installer (.dmg/.app on macOS, .msi/.exe on Windows, .deb/.AppImage on Linux)
+npm run tauri build    # build installers for this OS
 ```
 
-UI preview with a fake backend (no Twitch account needed): run `npm run dev` and open `http://localhost:1420/preview.html`. Add `?view=login` or `?view=code` to see the login steps.
+**UI preview without Twitch:** run `npm run dev`, then open `http://localhost:1420/preview.html`. Add `?view=login` or `?view=code` to see the login steps.
 
-Tests:
+**Tests:**
 
 ```bash
 cd src-tauri
-cargo test                          # parser, normalizer, rules, storage, Twitch API (against a mock server)
-cargo test -- --ignored live_       # also connects to real Twitch chat
+cargo test                       # parser, rules, storage, Twitch API (against a mock server)
+cargo test -- --ignored live_    # also connects to real Twitch chat
 ```
 
-## Project layout
+**Releasing:** bump the version in `package.json`, `src-tauri/tauri.conf.json` and `src-tauri/Cargo.toml`, then push a tag with the same version, e.g. `git tag 0.2.0 && git push origin 0.2.0`. GitHub Actions runs the tests, builds macOS, Windows and Linux installers, and publishes them as a release. Versions starting with 0 are marked as pre-releases.
+
+**Built-in Client ID:** set a `TWITCH_CLIENT_ID` repository variable (or environment variable for local builds), and users can skip step 2 of setup.
+
+**Twitch permissions requested** (all moderator-level, explained in [docs/twitch-limitations.md](docs/twitch-limitations.md)): `user:read:moderated_channels`, `moderator:manage:chat_messages`, `moderator:manage:banned_users`, `moderator:manage:warnings`, `moderator:manage:automod`, `moderator:manage:unban_requests`, `moderator:read:suspicious_users`, `moderator:manage:shoutouts`, `user:write:chat`, `moderator:read:followers`, `moderator:read:blocked_terms`, `moderator:read:chat_settings`, `moderator:read:moderators`, `moderator:read:vips`.
+
+**Project layout:**
 
 ```
 src-tauri/src/
-  irc.rs         Twitch IRC parser: chat messages (with user/room IDs, emote counts) and raids
-  twitch.rs      Chat WebSocket: JOIN rate limiting, reconnect with backoff
-  twitch_api.rs  Device code login, token refresh/validation, keychain, Helix moderation API
-  eventsub.rs    EventSub WebSocket: AutoMod, unban requests, suspicious users
-  waves.rs       Spam-wave detector
-  intel.rs       Account ages, other mods' actions, waves, inbox, ban-everywhere, bulk actions
-  normalize.rs   Anti-evasion text normalization, with mapping back to the original text
-  packs.rs       Default rule packs (parasocial, sexual content, harassment, wellbeing)
-  alerts.rs      When flags alert: channel alert levels and per-rule overrides
-  rules.rs       Rules engine (keywords, regex, links, caps, spam, repeats, first message)
-  db.rs          SQLite storage and migrations: channels, rules, flags, raids, mod actions, settings
-  core.rs        Session, mod-verified channels, chat processing, raid mode, user history, actions
-  commands.rs    Tauri commands used by the UI
+  irc.rs         Twitch chat parser: messages, raids, subs/bits, mod events
+  twitch.rs      Chat connection: rate limiting, reconnects
+  twitch_api.rs  Login (device code flow), token refresh, keychain, Twitch moderation API
+  eventsub.rs    Twitch event connection: AutoMod, unban requests, suspicious users, mod log, follows
+  rules.rs       Rules engine
+  normalize.rs   Disguised-spelling detection
+  packs.rs       Built-in rule packs
+  waves.rs       Spam-wave detection
+  alerts.rs      When flags alert (channel levels, per-rule overrides)
+  intel.rs       Account ages, other mods' actions, waves, inbox, bulk actions
+  core.rs        Session, channels, chat processing, raid mode, shoutouts, user history
+  db.rs          Local SQLite storage and migrations
+  commands.rs    Commands called by the UI
 src/
-  App.tsx        App state and event wiring
-  components/    LoginScreen, Sidebar, ChannelPicker, FlagQueue, ModActions, UserPanel, LiveChats, Raids, Rules, SettingsPanel
-  dev/preview.ts Fake backend for the browser UI preview
+  App.tsx        App state and wiring
+  components/    The screens (flag queue, rules, tuning, alerts, feeds…)
+  dev/preview.ts Fake backend for the UI preview
+.github/workflows/release.yml   Builds and publishes releases on version tags
 ```
+
+</details>
+
+---
 
 ## Roadmap
 
-- Rule import/export for sharing between mod teams
-- Raid vetting (raider's account age and history) and switching on followers-only / slow mode / Shield Mode during raid mode
-- Shift summaries
-- A shared queue for whole mod teams (needs a server)
-- Auto-update and code-signed installers
+- Raid vetting (the raider's account age and history), and switching on followers-only, slow mode or Shield Mode during raid mode
+- Sharing rule sets between mod teams
+- Shift summaries for handing over to the next mod
+- A shared queue for whole mod teams
+- Automatic updates and code-signed installers
