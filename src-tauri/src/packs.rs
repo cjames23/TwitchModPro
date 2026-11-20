@@ -22,6 +22,7 @@ pub fn base(name: &str, kind: RuleKind, severity: Severity) -> Rule {
         params: RuleParams::default(),
         also_patterns: vec![],
         addressed_to_streamer: false,
+        not_to_other_chatters: false,
         exceptions: vec![],
         skip_subscribers: false,
         skip_accounts_older_than_days: 0,
@@ -29,6 +30,49 @@ pub fn base(name: &str, kind: RuleKind, severity: Severity) -> Rule {
         wellbeing: false,
         pack: None,
     }
+}
+
+pub(crate) const BACKSEATING_V1: &[&str] =
+    &["go left", "go right", "you missed", "wrong way", "you should have", "why didn't you", "why didnt you", "just use the"];
+const BACKSEATING_V2: &[&str] = &[
+    "go left",
+    "go right",
+    "go back",
+    "go up",
+    "go down",
+    "wrong way",
+    "other way",
+    "you missed",
+    "you forgot",
+    "behind you",
+    "you should have",
+    "why didn't you",
+    "why didnt you",
+    "just use the",
+];
+pub(crate) const BODY_COMMENTS_V1: &[&str] = &["nice body", "thicc", "bend over", "cleavage", "thighs", "boobs", "booty", "nice rack"];
+
+/// Fix pack rules saved by older versions, unless the mod has edited their word lists.
+/// Returns the updated rules (to be saved).
+pub fn upgrade_pack_rules(existing: &[Rule]) -> Vec<Rule> {
+    let mut out = Vec::new();
+    for r in existing {
+        let is = |pack: &str, name: &str| r.pack.as_deref() == Some(pack) && r.name == name;
+        let untouched = |v1: &[&str]| r.patterns == words(v1) && r.addressed_to_streamer;
+        if is("Chat quality", "Backseating") && untouched(BACKSEATING_V1) {
+            let mut u = r.clone();
+            u.addressed_to_streamer = false;
+            u.not_to_other_chatters = true;
+            u.patterns = words(BACKSEATING_V2);
+            out.push(u);
+        } else if is("Sexual content", "Body comments") && untouched(BODY_COMMENTS_V1) {
+            let mut u = r.clone();
+            u.addressed_to_streamer = false;
+            u.not_to_other_chatters = true;
+            out.push(u);
+        }
+    }
+    out
 }
 
 fn words(list: &[&str]) -> Vec<String> {
@@ -175,7 +219,8 @@ pub fn default_packs() -> Vec<Rule> {
     out.push(packed(p, r));
 
     let mut r = base("Body comments", Keyword, Medium);
-    r.addressed_to_streamer = true;
+    // Short comments like "thicc" rarely say "you", so only skip ones aimed at other chatters.
+    r.not_to_other_chatters = true;
     r.patterns = words(&["nice body", "thicc", "bend over", "cleavage", "thighs", "boobs", "booty", "nice rack"]);
     out.push(packed(p, r));
 
@@ -218,8 +263,9 @@ pub fn default_packs() -> Vec<Rule> {
     // ---- Chat quality ----
     let mut r = base("Backseating", Keyword, Low);
     r.enabled = false;
-    r.addressed_to_streamer = true;
-    r.patterns = words(&["go left", "go right", "you missed", "wrong way", "you should have", "why didn't you", "why didnt you", "just use the"]);
+    // Instructions like "go left" never say "you", so only skip ones aimed at other chatters.
+    r.not_to_other_chatters = true;
+    r.patterns = words(BACKSEATING_V2);
     out.push(packed("Chat quality", r));
 
     out
@@ -281,9 +327,79 @@ mod tests {
         assert_eq!(names("kys"), vec!["Telling someone to die"]);
         assert_eq!(names("honestly i wanna die"), vec!["Self-harm statements"]);
         assert_eq!(names("pixelqueen you're so thicc"), vec!["Body comments"]);
+        assert_eq!(names("thicc"), vec!["Body comments"]);
         // Ordinary chat that shares words with the packs.
         for ok in ["show me your setup", "gg that was clean", "@bob marry me lol", "my wife loves this game", "stand up for yourself"] {
             assert!(names(ok).is_empty(), "{ok:?} matched {:?}", names(ok));
         }
+    }
+
+    /// The exact messages from a live test in a real chat. Before the fix only "you missed" matched.
+    #[test]
+    fn backseating_catches_live_chat_examples() {
+        let rules: Vec<Rule> = default_packs()
+            .into_iter()
+            .filter(|r| r.name == "Backseating")
+            .map(|mut r| {
+                r.id = 1;
+                r.enabled = true;
+                r
+            })
+            .collect();
+        let engine = RuleEngine::new(&rules);
+        let check = |login: &str, text: &str, is_mod: bool, is_sub: bool| {
+            let m = crate::irc::ChatMessage {
+                id: "1".into(),
+                channel: "shadesofnate".into(),
+                room_id: None,
+                user_id: None,
+                user_login: login.into(),
+                display_name: login.into(),
+                color: None,
+                text: text.into(),
+                is_action: false,
+                is_mod,
+                is_broadcaster: false,
+                is_vip: false,
+                is_subscriber: is_sub,
+                is_first_msg: false,
+                emote_count: 0,
+                reply_to: None,
+                timestamp: 1,
+            };
+            !engine.evaluate(&m, false).is_empty()
+        };
+        let live = [
+            ("smokeyfireman", "wrong way", false),
+            ("smokeyfireman", "go left", false),
+            ("paloma_roxanne", "Go left", true),
+            ("florian_silvanus", "go left", false),
+            ("florian_silvanus", "go right", false),
+            ("smokeyfireman", "you missed", false),
+            ("paloma_roxanne", "You missed", true),
+            ("florian_silvanus", "you missed", false),
+            ("florian_silvanus", "wrong way", false),
+        ];
+        for (user, text, sub) in live {
+            assert!(check(user, text, false, sub), "{user}: {text:?} wasn't caught");
+        }
+        assert!(!check("spectresofzizek", "Thank you!", true, true));
+        assert!(!check("someone", "@smokeyfireman go left", false, false));
+    }
+
+    #[test]
+    fn upgrades_untouched_v1_pack_rules_only() {
+        let mut old = base("Backseating", RuleKind::Keyword, Severity::Low);
+        old.pack = Some("Chat quality".into());
+        old.addressed_to_streamer = true;
+        old.patterns = words(BACKSEATING_V1);
+        let mut edited = old.clone();
+        edited.name = "Body comments".into();
+        edited.pack = Some("Sexual content".into());
+        edited.patterns = words(&["thicc", "my own word"]);
+        let up = upgrade_pack_rules(&[old, edited]);
+        assert_eq!(up.len(), 1);
+        assert!(up[0].not_to_other_chatters && !up[0].addressed_to_streamer);
+        assert!(up[0].patterns.contains(&"go back".to_string()));
     }
 }

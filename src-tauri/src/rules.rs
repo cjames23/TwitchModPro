@@ -138,9 +138,12 @@ pub struct Rule {
     /// Keyword/regex rules: the message must ALSO contain one of these.
     #[serde(default)]
     pub also_patterns: Vec<String>,
-    /// Only messages talking to the streamer (their name, @, or "you"), not replies to other chatters.
+    /// Strict: only messages clearly talking to the streamer (their name, @, or "you").
     #[serde(default)]
     pub addressed_to_streamer: bool,
+    /// Lenient: skip only messages aimed at another chatter (replies, or starting with @someone else).
+    #[serde(default)]
+    pub not_to_other_chatters: bool,
     /// Phrases that stop this rule from firing.
     #[serde(default)]
     pub exceptions: Vec<String>,
@@ -434,7 +437,17 @@ static LINK_RE: LazyLock<Regex> = LazyLock::new(|| {
 
 const SECOND_PERSON: &[&str] = &["you", "your", "youre", "yours", "yourself", "ur", "u", "ya", "yall", "youve", "youd", "youll"];
 
-/// Whether a message is talking to the streamer rather than to another chatter.
+/// Whether a message is aimed at another chatter: a reply to them, or starting with @them.
+pub fn to_other_chatter(msg: &ChatMessage) -> bool {
+    let channel = msg.channel.as_str();
+    if let Some(parent) = &msg.reply_to {
+        return parent != channel;
+    }
+    let first = msg.text.split_whitespace().next().unwrap_or_default();
+    first.starts_with('@') && !first.trim_start_matches('@').trim_end_matches([',', ':']).eq_ignore_ascii_case(channel)
+}
+
+/// Whether a message is clearly talking to the streamer: names or @s them, or says "you".
 pub fn addressed_to_streamer(msg: &ChatMessage) -> bool {
     let channel = msg.channel.as_str();
     if let Some(parent) = &msg.reply_to {
@@ -661,6 +674,9 @@ impl RuleEngine {
             if rule.addressed_to_streamer && !addressed {
                 continue;
             }
+            if rule.not_to_other_chatters && to_other_chatter(msg) {
+                continue;
+            }
             if let Some(ex) = &cr.exceptions {
                 if !ex.find(&mut text).is_empty() {
                     continue;
@@ -821,6 +837,7 @@ mod tests {
             params: RuleParams::default(),
             also_patterns: vec![],
             addressed_to_streamer: false,
+            not_to_other_chatters: false,
             exceptions: vec![],
             skip_subscribers: false,
             skip_accounts_older_than_days: 0,
@@ -1010,6 +1027,27 @@ mod tests {
         let engine = RuleEngine::new(&[r]);
         assert_eq!(engine.evaluate(&m("marry me pixelqueen"), false).len(), 1);
         assert!(engine.evaluate(&m("@bob marry me lol"), false).is_empty());
+    }
+
+    #[test]
+    fn not_to_other_chatters_is_lenient() {
+        let m = |text: &str| msg("shadesofnate", text);
+        // Commands with no "you" still count as aimed at the streamer...
+        assert!(!to_other_chatter(&m("go left")));
+        assert!(!to_other_chatter(&m("@ShadesOfNate go left")));
+        // ...but messages aimed at another chatter don't.
+        assert!(to_other_chatter(&m("@smokeyfireman go left")));
+        let mut reply = m("go left");
+        reply.reply_to = Some("smokeyfireman".into());
+        assert!(to_other_chatter(&reply));
+        reply.reply_to = Some("shadesofnate".into());
+        assert!(!to_other_chatter(&reply));
+
+        let mut r = rule(RuleKind::Keyword, &["go left"]);
+        r.not_to_other_chatters = true;
+        let engine = RuleEngine::new(&[r]);
+        assert_eq!(engine.evaluate(&m("go left"), false).len(), 1);
+        assert!(engine.evaluate(&m("@bob go left"), false).is_empty());
     }
 
     #[test]

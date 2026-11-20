@@ -362,6 +362,7 @@ impl Db {
             self.seed_starter()?;
         }
         self.seed_packs()?;
+        self.upgrade_packs()?;
         Ok(())
     }
 
@@ -379,6 +380,23 @@ impl Db {
         self.conn
             .execute("INSERT INTO settings (key, value) VALUES ('seeded_packs_v1', '1')", [])
             .map_err(err)?;
+        Ok(())
+    }
+
+    /// Apply fixes to default pack rules from older versions (once).
+    fn upgrade_packs(&self) -> DbResult<()> {
+        let done: Option<String> = self
+            .conn
+            .query_row("SELECT value FROM settings WHERE key = 'packs_v2'", [], |r| r.get(0))
+            .optional()
+            .map_err(err)?;
+        if done.is_some() {
+            return Ok(());
+        }
+        for r in crate::packs::upgrade_pack_rules(&self.rules()?) {
+            self.save_rule(&r)?;
+        }
+        self.conn.execute("INSERT INTO settings (key, value) VALUES ('packs_v2', '1')", []).map_err(err)?;
         Ok(())
     }
 

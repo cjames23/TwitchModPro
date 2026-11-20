@@ -485,3 +485,5 @@ kbd {
 .tune-table tr.disabled { opacity: 0.55; }
 .tune-table tr.detail > td { background: var(--bg); }
 .tune-table.inner { margin-bottom: 4px; }
+.audience { display: flex; flex-direction: column; gap: 4px; padding: 6px 0 2px; }
+.audience label { display: flex; gap: 8px; align-items: center; cursor: pointer; }

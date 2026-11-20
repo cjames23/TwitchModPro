@@ -54,6 +54,7 @@ const blankRule = (): Rule => ({
   params: { ...DEFAULT_PARAMS },
   alsoPatterns: [],
   addressedToStreamer: false,
+  notToOtherChatters: false,
   exceptions: [],
   skipSubscribers: false,
   skipAccountsOlderThanDays: 0,
@@ -90,7 +91,8 @@ export function Rules({ rules, channels, onRulesChanged, editRuleId }: Props) {
     }
     parts.push(r.channels.length ? r.channels.map((c) => `#${c}`).join(", ") : "all channels");
     if (r.activeDuring === "raid") parts.push("raid mode only");
-    if (r.addressedToStreamer) parts.push("to the streamer");
+    if (r.addressedToStreamer) parts.push("clearly to the streamer");
+    else if (r.notToOtherChatters) parts.push("not to other chatters");
     return parts.join(" · ");
   }
 
@@ -412,14 +414,36 @@ function RuleEditor({
           Ignore mods, VIPs and the broadcaster
         </label>
         {rule.kind !== "fixation" && !byUsername && (
-          <label>
-            <input
-              type="checkbox"
-              checked={rule.addressedToStreamer}
-              onChange={(e) => set("addressedToStreamer", e.target.checked)}
-            />
-            Only messages to the streamer <span className="hint">(their name, @, or “you”; not replies to other chatters)</span>
-          </label>
+          <div className="audience">
+            <span className="hint">Who the message is aimed at:</span>
+            <label>
+              <input
+                type="radio"
+                name="audience"
+                checked={!rule.addressedToStreamer && !rule.notToOtherChatters}
+                onChange={() => setRule((r) => ({ ...r, addressedToStreamer: false, notToOtherChatters: false }))}
+              />
+              Anyone
+            </label>
+            <label>
+              <input
+                type="radio"
+                name="audience"
+                checked={rule.notToOtherChatters && !rule.addressedToStreamer}
+                onChange={() => setRule((r) => ({ ...r, addressedToStreamer: false, notToOtherChatters: true }))}
+              />
+              Not another chatter <span className="hint">(skips replies and messages starting with @someone else)</span>
+            </label>
+            <label>
+              <input
+                type="radio"
+                name="audience"
+                checked={rule.addressedToStreamer}
+                onChange={() => setRule((r) => ({ ...r, addressedToStreamer: true, notToOtherChatters: false }))}
+              />
+              Clearly the streamer <span className="hint">(must say their name, @ them, or say “you”; misses “go left”)</span>
+            </label>
+          </div>
         )}
         <label>
           <input type="checkbox" checked={rule.skipSubscribers} onChange={(e) => set("skipSubscribers", e.target.checked)} />

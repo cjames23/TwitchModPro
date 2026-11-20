@@ -40,6 +40,7 @@ export interface Rule {
   params: RuleParams;
   alsoPatterns: string[];
   addressedToStreamer: boolean;
+  notToOtherChatters: boolean;
   exceptions: string[];
   skipSubscribers: boolean;
   skipAccountsOlderThanDays: number;

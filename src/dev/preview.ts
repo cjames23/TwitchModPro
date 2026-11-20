@@ -67,6 +67,7 @@ const r = (x: Partial<Rule> & Pick<Rule, "id" | "name" | "kind" | "severity">): 
   params,
   alsoPatterns: [],
   addressedToStreamer: false,
+  notToOtherChatters: false,
   exceptions: [],
   skipSubscribers: false,
   skipAccountsOlderThanDays: 0,
