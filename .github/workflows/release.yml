@@ -1,0 +1,163 @@
+# Builds Twitch Mod Pro for macOS, Windows and Linux and publishes a GitHub release
+# whenever a version tag is pushed (e.g. `0.1.0` or `v0.1.0`).
+#
+# Flow: check the tag matches the app version -> create a draft release ->
+# build all platforms in parallel and upload installers -> publish the release
+# only if every platform built.
+#
+# Optional repository variable: TWITCH_CLIENT_ID. When set, it's baked into the
+# builds so testers can log in without registering their own Twitch application.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+*"
+      - "[0-9]+.[0-9]+.[0-9]+*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to (re)build a release for, e.g. 0.1.0"
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  TAG: ${{ github.event.inputs.tag || github.ref_name }}
+
+jobs:
+  create-release:
+    name: Create draft release
+    runs-on: ubuntu-latest
+    outputs:
+      release_id: ${{ steps.release.outputs.release_id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+
+      - name: Check the tag matches the app version
+        run: |
+          # Only plain version tags (e.g. 0.1.0, v1.2.3, 0.2.0-beta.1) are allowed through.
+          if ! [[ "$TAG" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
+            echo "::error::'$TAG' isn't a version tag like 0.1.0"
+            exit 1
+          fi
+          tag_version="${TAG#v}"
+          for f in src-tauri/tauri.conf.json package.json; do
+            v=$(jq -r .version "$f")
+            if [ "$v" != "$tag_version" ]; then
+              echo "::error file=$f::Tag $TAG doesn't match version $v in $f. Bump the version before tagging."
+              exit 1
+            fi
+          done
+          cargo_version=$(grep -m1 '^version' src-tauri/Cargo.toml | cut -d'"' -f2)
+          if [ "$cargo_version" != "$tag_version" ]; then
+            echo "::error file=src-tauri/Cargo.toml::Tag $TAG doesn't match version $cargo_version in Cargo.toml."
+            exit 1
+          fi
+
+      - name: Create the draft release (or reuse it)
+        id: release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          version="${TAG#v}"
+          sed -e "s/{{VERSION}}/$version/g" -e "s/{{TAG}}/$TAG/g" \
+            -e "s#{{REPO_URL}}#https://github.com/$GITHUB_REPOSITORY#g" .github/release-notes.md > notes.md
+          # 0.x versions are marked as pre-releases.
+          pre=""
+          case "$version" in 0.*) pre="--prerelease" ;; esac
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --draft $pre --verify-tag \
+              --title "Twitch Mod Pro $version" --notes-file notes.md
+          fi
+          # Drafts aren't returned by /releases/tags/{tag}, so look the ID up from the list.
+          id=$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate \
+            --jq ".[] | select(.tag_name == \"$TAG\") | .id" | head -n1)
+          if [ -z "$id" ]; then
+            echo "::error::Couldn't find the release for $TAG"
+            exit 1
+          fi
+          echo "release_id=$id" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build (${{ matrix.name }})
+    needs: create-release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS (Apple Silicon + Intel)
+            os: macos-latest
+            rust-targets: aarch64-apple-darwin,x86_64-apple-darwin
+            args: --target universal-apple-darwin
+          - name: Windows
+            os: windows-latest
+            rust-targets: ""
+            args: ""
+          - name: Linux
+            os: ubuntu-22.04
+            rust-targets: ""
+            args: ""
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          # Tauri (WebKitGTK, tray, icons, AppImage) + D-Bus for the system keychain.
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf \
+            libdbus-1-dev pkg-config
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust-targets }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          key: ${{ matrix.os }}
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      # Run the test suite once (on Linux) so a broken build never gets published.
+      - name: Run tests
+        if: runner.os == 'Linux'
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+
+      - name: Build and upload installers
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Baked in at compile time when set (see the note at the top of this file).
+          TWITCH_CLIENT_ID: ${{ vars.TWITCH_CLIENT_ID }}
+        with:
+          releaseId: ${{ needs.create-release.outputs.release_id }}
+          args: ${{ matrix.args }}
+
+  publish:
+    name: Publish release
+    needs: [create-release, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish the draft
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false
