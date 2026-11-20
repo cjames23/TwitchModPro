@@ -72,19 +72,23 @@ jobs:
           sed -e "s/{{VERSION}}/$version/g" -e "s/{{TAG}}/$TAG/g" \
             -e "s#{{REPO_URL}}#https://github.com/$GITHUB_REPOSITORY#g" .github/release-notes.md > notes.md
           # 0.x versions are marked as pre-releases.
-          pre=""
-          case "$version" in 0.*) pre="--prerelease" ;; esac
-          if ! gh release view "$TAG" >/dev/null 2>&1; then
-            gh release create "$TAG" --draft $pre --verify-tag \
-              --title "Twitch Mod Pro $version" --notes-file notes.md
-          fi
-          # Drafts aren't returned by /releases/tags/{tag}, so look the ID up from the list.
-          id=$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate \
-            --jq ".[] | select(.tag_name == \"$TAG\") | .id" | head -n1)
+          pre=false
+          case "$version" in 0.*) pre=true ;; esac
+          # Reuse a release for this tag if one exists (e.g. a draft from an earlier, failed run).
+          # Drafts aren't returned by /releases/tags/{tag}, so search the list.
+          id=$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            --jq "[.[] | select(.tag_name == \"$TAG\") | .id][0] // empty")
           if [ -z "$id" ]; then
-            echo "::error::Couldn't find the release for $TAG"
+            # Take the ID from the create call itself; the list can lag behind for a few seconds.
+            id=$(gh api -X POST "repos/$GITHUB_REPOSITORY/releases" \
+              -f tag_name="$TAG" -f name="Twitch Mod Pro $version" -F body=@notes.md \
+              -F draft=true -F prerelease="$pre" --jq .id)
+          fi
+          if [ -z "$id" ]; then
+            echo "::error::Couldn't create or find the release for $TAG"
             exit 1
           fi
+          echo "Using release $id"
           echo "release_id=$id" >> "$GITHUB_OUTPUT"
 
   build:
