@@ -3,11 +3,17 @@ mod commands;
 mod core;
 mod db;
 mod eventsub;
+mod evasion;
 mod intel;
 mod irc;
 mod normalize;
 mod packs;
+mod pileon;
+mod raidwatch;
 mod rules;
+mod safety;
+mod sharing;
+mod toxicity;
 mod twitch;
 mod twitch_api;
 mod waves;
@@ -34,6 +40,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&dir)?;
@@ -45,6 +52,8 @@ pub fn run() {
             let sink = core.clone();
             let _ = core.client.set(ChatClient::start(vec![], Arc::new(move |e| sink.handle(e))));
             app.manage(AppState { core: core.clone() });
+            let settings = core.db.lock().unwrap().settings();
+            core.set_toxicity(settings.toxicity_enabled);
 
             // Restore the saved login, then keep it validated and mod status fresh.
             let session = core.clone();
@@ -63,13 +72,15 @@ pub fn run() {
                 }
             });
 
-            // Look up account ages in batches (for new-account rules and flag cards).
+            // Look up account ages in batches (for new-account rules and flag cards),
+            // then re-score any raid being watched.
             let ages = core.clone();
             tauri::async_runtime::spawn(async move {
                 let mut tick = tokio::time::interval(Duration::from_secs(1));
                 loop {
                     tick.tick().await;
                     ages.resolve_ages().await;
+                    ages.tick_raids();
                 }
             });
 
@@ -129,6 +140,13 @@ pub fn run() {
             commands::get_activity,
             commands::set_rule_channel_alert,
             commands::set_pack_channel_alert,
+            commands::get_toxicity_status,
+            commands::score_toxicity,
+            commands::export_rules,
+            commands::save_rule_file,
+            commands::read_rule_file,
+            commands::preview_rule_import,
+            commands::import_rules,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

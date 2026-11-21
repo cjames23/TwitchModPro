@@ -1,4 +1,4 @@
-import type { LadderStep, Settings, Severity } from "../types";
+import type { LadderStep, Settings, Severity, ToxicityInfo } from "../types";
 import { playTone } from "../util";
 import { ordinal } from "../intel";
 
@@ -10,9 +10,11 @@ export function SettingsPanel({
   settings,
   onChange,
   channelAlerts,
+  toxicity,
 }: {
   settings: Settings;
   onChange: (s: Settings) => void;
+  toxicity: ToxicityInfo | null;
   /** The per-streamer alerts section. */
   channelAlerts?: React.ReactNode;
 }) {
@@ -173,6 +175,72 @@ export function SettingsPanel({
         </div>
 
         <div className="setting-group">
+          <h3>Pile-ons</h3>
+          <label className="check">
+            <input type="checkbox" checked={settings.pileOnEnabled} onChange={(e) => set("pileOnEnabled", e.target.checked)} />
+            Spot several chatters going after one person
+          </label>
+          <label className="field inline">
+            <span>Flag when at least</span>
+            <input
+              type="number"
+              min={2}
+              max={50}
+              disabled={!settings.pileOnEnabled}
+              value={settings.pileOnMinUsers}
+              onChange={(e) => set("pileOnMinUsers", Math.min(50, Math.max(2, Number(e.target.value) || 2)))}
+            />
+            <span className="hint">chatters reply to or @ the same person within</span>
+            <input
+              type="number"
+              min={15}
+              max={900}
+              disabled={!settings.pileOnEnabled}
+              value={settings.pileOnWindowSecs}
+              onChange={(e) => set("pileOnWindowSecs", Math.min(900, Math.max(15, Number(e.target.value) || 15)))}
+            />
+            <span className="hint">seconds</span>
+          </label>
+          <p className="muted-text">
+            At least half of them must be hostile: setting off one of your rules, using words like “stfu”, “ratio” or
+            “nobody asked”, or (with the toxicity check on) scoring as toxic. For the streamer, every one must be hostile,
+            since everyone talks to the streamer.
+          </p>
+        </div>
+
+        <div className="setting-group">
+          <h3>Ban evasion</h3>
+          <label className="check">
+            <input type="checkbox" checked={settings.evasionCheck} onChange={(e) => set("evasionCheck", e.target.checked)} />
+            Flag new chatters whose names look like someone banned recently
+          </label>
+          <p className="muted-text">
+            Compares each new chatter with users banned in any of your channels in the last 90 days, for example{" "}
+            <code>troll_guy</code> → <code>troll_guy2</code>, <code>tr0ll_guy</code> or <code>trollguy_is_back</code>. Matches
+            in the same channel are high severity.
+          </p>
+        </div>
+
+        <div className="setting-group">
+          <h3>On-device toxicity check</h3>
+          <label className="check">
+            <input type="checkbox" checked={settings.toxicityEnabled} onChange={(e) => set("toxicityEnabled", e.target.checked)} />
+            Score chat with the built-in toxicity model
+          </label>
+          {toxicity && <ToxicityStatusLine info={toxicity} />}
+          <p className="muted-text">
+            A small AI model that comes with the app and runs on this computer. No messages are sent anywhere. It catches
+            insults and abuse that keyword lists miss, and helps pile-on detection. It uses some CPU (about 10 ms per
+            message), so it's off unless you turn it on.
+          </p>
+          <p className="muted-text">
+            What it flags is set by rules of the “Toxicity (AI)” type; the default one, <em>Toxic messages (AI)</em>, starts in
+            test mode. It's English only, and it doesn't know Twitch slang well, so check the Tuning tab before switching
+            its rules on.
+          </p>
+        </div>
+
+        <div className="setting-group">
           <h3>Sound</h3>
           <label className="check">
             <input type="checkbox" checked={settings.playSounds} onChange={(e) => set("playSounds", e.target.checked)} />
@@ -187,5 +255,18 @@ export function SettingsPanel({
         <p className="muted-text">Mute a single channel from the bell icon in the sidebar.</p>
       </div>
     </section>
+  );
+}
+
+function ToxicityStatusLine({ info }: { info: ToxicityInfo }) {
+  const st = info.status;
+  if (st.state === "off") return null;
+  if (st.state === "loading") return <p className="status-line">Loading the model…</p>;
+  if (st.state === "failed") return <p className="status-line bad">The model couldn't be loaded: {st.error}</p>;
+  return (
+    <p className="status-line ok">
+      ✓ Running · {info.scored.toLocaleString()} messages scored
+      {info.skipped > 0 && ` · ${info.skipped.toLocaleString()} skipped while chat was too busy`}
+    </p>
   );
 }

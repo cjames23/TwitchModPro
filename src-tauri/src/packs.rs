@@ -270,7 +270,17 @@ pub fn default_packs() -> Vec<Rule> {
     r.patterns = words(BACKSEATING_V2);
     out.push(packed("Chat quality", r));
 
+    out.push(toxicity_rule());
     out
+}
+
+pub const TOXICITY_PACK: &str = "On-device AI";
+
+/// Flags messages the on-device model scores as toxic. Does nothing until the model is switched on in Settings.
+pub fn toxicity_rule() -> Rule {
+    let mut r = base("Toxic messages (AI)", RuleKind::Toxicity, Severity::Medium);
+    r.params.toxicity_percent = 85;
+    packed(TOXICITY_PACK, r)
 }
 
 #[cfg(test)]

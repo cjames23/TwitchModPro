@@ -227,6 +227,13 @@ impl Core {
         let cfg: WaveConfig = *self.wave_cfg.lock().unwrap();
         let changed = self.waves.lock().unwrap().observe(msg, cfg);
         for wave in changed {
+            self.publish_wave(wave);
+        }
+    }
+
+    /// Send a new or grown wave to the UI, alerting the first time it's seen.
+    pub(crate) fn publish_wave(&self, wave: Wave) {
+        {
             let new = self.wave_notified.lock().unwrap().insert(wave.id);
             let (alert, sound) = {
                 let db = self.db.lock().unwrap();
@@ -234,16 +241,19 @@ impl Core {
                 let alert = levels.iter().any(|(l, _)| *l != crate::alerts::ChannelAlertLevel::Off);
                 (alert, alert && db.settings().play_sounds && levels.iter().any(|(l, s)| *s && *l != crate::alerts::ChannelAlertLevel::Off))
             };
-            if new {
+            // Raid alerts already announce risky raiders.
+            if new && wave.kind != crate::waves::WaveKind::RaidRaiders {
                 if alert && self.should_notify(&format!("wave:{}", wave.key)) {
                     let chans: Vec<String> = wave.channels.iter().map(|c| format!("#{c}")).collect();
+                    let title = if wave.kind == crate::waves::WaveKind::PileOn { "Pile-on" } else { "Spam wave" };
                     self.notify(
-                        &format!("Spam wave in {}", chans.join(", ")),
-                        &format!("{} accounts {}", wave.members.len(), describe_wave(&wave)),
+                        &format!("{title} in {}", chans.join(", ")),
+                        &wave.detail.clone().unwrap_or_else(|| format!("{} accounts {}", wave.members.len(), describe_wave(&wave))),
                     );
                 }
             }
-            let _ = self.app.emit("wave", serde_json::json!({ "wave": wave, "new": new, "sound": new && sound }));
+            let sound = new && sound && wave.kind != crate::waves::WaveKind::RaidRaiders;
+            let _ = self.app.emit("wave", serde_json::json!({ "wave": wave, "new": new, "sound": sound }));
         }
     }
 
@@ -766,6 +776,8 @@ pub fn describe_wave(w: &Wave) -> String {
         SameMessage => "posting the same message".into(),
         SimilarNames => format!("with names like “{}…”", w.key),
         FirstTimeBurst => "chatting for the first time at once".into(),
+        PileOn => format!("piling on @{}", w.key),
+        RaidRaiders => format!("looking suspicious after {}'s raid", w.key),
     }
 }
 

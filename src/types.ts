@@ -1,6 +1,16 @@
 export type Severity = "low" | "medium" | "high";
-export type RuleKind = "keyword" | "regex" | "links" | "caps" | "spam" | "repeat" | "firstMessage" | "newAccount" | "fixation";
-export type FlagKind = "rule" | "automod" | "unbanRequest" | "suspicious";
+export type RuleKind =
+  | "keyword"
+  | "regex"
+  | "links"
+  | "caps"
+  | "spam"
+  | "repeat"
+  | "firstMessage"
+  | "newAccount"
+  | "fixation"
+  | "toxicity";
+export type FlagKind = "rule" | "automod" | "unbanRequest" | "suspicious" | "evasion";
 export type FlagStatus = "open" | "reviewed" | "dismissed";
 export type ConnStatus = "connecting" | "connected" | "disconnected";
 
@@ -47,6 +57,7 @@ export interface RuleParams {
   maxAccountAgeDays: number;
   fixationCount: number;
   fixationWindowMins: number;
+  toxicityPercent: number;
 }
 
 export interface Rule {
@@ -153,6 +164,10 @@ export interface Flag {
     banEvasion?: string;
     lowTrustStatus?: string;
     sharedBans?: number;
+    evasionOf?: string;
+    evasionChannel?: string;
+    bannedAt?: number;
+    toxicity?: ToxicityScores;
     [k: string]: unknown;
   };
 }
@@ -167,6 +182,54 @@ export interface Raid {
   acknowledged: boolean;
   fromUserId: string | null;
   shoutoutAt: number | null;
+  risk?: RaidRisk | null;
+}
+
+export interface RaidRisk {
+  level: Severity;
+  score: number;
+  reasons: { text: string; weight: number }[];
+  /** False while chat is still being watched (the first 90 seconds). */
+  done: boolean;
+  raiderCreatedAt: number | null;
+  raiderFollowers: number | null;
+  priorRaids: number;
+  chatters: number;
+  newAccounts: number;
+  knownAges: number;
+  firstTimers: number;
+  flagged: number;
+  similarNames: number;
+  waveId: number | null;
+}
+
+export interface ToxicityScores {
+  toxic: number;
+  severe: number;
+}
+
+export interface ToxicityInfo {
+  status: { state: "off" | "loading" | "ready" } | { state: "failed"; error: string };
+  scored: number;
+  skipped: number;
+}
+
+export type ImportStatus = "new" | "identical" | "conflict" | "invalid";
+export type ImportChoice = "skip" | "add" | "replace";
+
+export interface ImportItem {
+  index: number;
+  rule: Rule;
+  status: ImportStatus;
+  existingId: number | null;
+  error: string | null;
+}
+
+export interface ImportPreview {
+  name: string;
+  description: string;
+  exportedAt: number;
+  items: ImportItem[];
 }
 
 export interface ShoutoutResult {
@@ -193,6 +256,11 @@ export interface Settings {
   ladderLookbackDays: number;
   waveMinAccounts: number;
   waveWindowSecs: number;
+  evasionCheck: boolean;
+  pileOnEnabled: boolean;
+  pileOnMinUsers: number;
+  pileOnWindowSecs: number;
+  toxicityEnabled: boolean;
 }
 
 export interface ConnectionInfo {
@@ -250,7 +318,7 @@ export interface WaveMember {
 
 export interface Wave {
   id: number;
-  kind: "sameMessage" | "similarNames" | "firstTimeBurst";
+  kind: "sameMessage" | "similarNames" | "firstTimeBurst" | "pileOn" | "raidRaiders";
   key: string;
   channels: string[];
   members: WaveMember[];
@@ -258,6 +326,7 @@ export interface Wave {
   lastSeen: number;
   status: "open" | "actioned" | "dismissed";
   severity: Severity;
+  detail?: string;
 }
 
 export interface BulkResult {
@@ -324,6 +393,7 @@ export interface Snapshot {
   raidModes: RaidModes;
   waves: Wave[];
   sanctions: ModAction[];
+  toxicity: ToxicityInfo;
 }
 
 /** Who a mod action is aimed at. */

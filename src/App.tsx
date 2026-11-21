@@ -17,6 +17,7 @@ import type {
   Wave,
   ModLogEntry,
   Activity,
+  ToxicityInfo,
 } from "./types";
 import { playTone, setChannelColors } from "./util";
 import { fmtSecs, indexSanctions } from "./intel";
@@ -74,6 +75,7 @@ export default function App() {
   const [modLog, setModLog] = useState<ModLogEntry[]>([]);
   const [activity, setActivity] = useState<Activity[]>([]);
   const [alertsFocus, setAlertsFocus] = useState<string | null>(null);
+  const [toxicity, setToxicity] = useState<ToxicityInfo | null>(null);
 
   // Tag colors come from each channel's saved color.
   setChannelColors(channels);
@@ -95,16 +97,28 @@ export default function App() {
     (async () => {
       // Subscribe first so nothing that happens during the snapshot is missed.
       const off = await subscribe({
-        onFlag: ({ flag, alert, sound }) => {
-          setFlags((fs) => (fs.some((f) => f.id === flag.id) ? fs : [flag, ...fs].slice(0, MAX_FLAGS)));
+        onFlag: ({ flag, alert, sound, update }) => {
+          setFlags((fs) =>
+            fs.some((f) => f.id === flag.id)
+              ? update
+                ? fs.map((f) => (f.id === flag.id ? { ...flag, contextAfter: f.contextAfter } : f))
+                : fs
+              : [flag, ...fs].slice(0, MAX_FLAGS),
+          );
           if (sound ?? (alert && settingsRef.current?.playSounds)) playTone("flag");
         },
         onFlagContext: ({ id, line }) =>
           setFlags((fs) => fs.map((f) => (f.id === id ? { ...f, contextAfter: [...f.contextAfter, line] } : f))),
         onFlagsResolved: ({ ids, resolution }) =>
           setFlags((fs) => fs.map((f) => (ids.includes(f.id) ? { ...f, status: "reviewed", resolution } : f))),
-        onRaid: ({ raid, alert, sound }) => {
-          setRaids((rs) => (rs.some((r) => r.id === raid.id) ? rs : [raid, ...rs].slice(0, MAX_RAIDS)));
+        onRaid: ({ raid, alert, sound, update }) => {
+          setRaids((rs) =>
+            rs.some((r) => r.id === raid.id)
+              ? update
+                ? rs.map((r) => (r.id === raid.id ? { ...raid, acknowledged: r.acknowledged && !alert } : r))
+                : rs
+              : [raid, ...rs].slice(0, MAX_RAIDS),
+          );
           if (sound ?? (alert && settingsRef.current?.playSounds)) playTone("raid");
         },
         onRaidMode: setRaidModes,
@@ -134,6 +148,7 @@ export default function App() {
         onAccountAges: (a) => setAges((prev) => ({ ...prev, ...a })),
         onMessageDeleted: ({ messageId }) => setDeleted((d) => new Set(d).add(messageId)),
         onInboxStatus: ({ connected }) => setInboxConnected(connected),
+        onToxicity: setToxicity,
         onNotice: ({ channel, text }) => toast(channel ? `#${channel}: ${text}` : text),
       });
       // If the effect was torn down while we were subscribing, don't leak the listeners.
@@ -155,6 +170,7 @@ export default function App() {
         setRaidModes(snap.raidModes);
         setWaves(snap.waves);
         setSanctions(snap.sanctions);
+        setToxicity(snap.toxicity);
         api.modLog(MAX_FEED).then(setModLog).catch(() => {});
         api.activity(MAX_FEED).then(setActivity).catch(() => {});
         setLoaded(true);
@@ -365,7 +381,15 @@ export default function App() {
       />
 
       <main className="main">
-        <RaidBanner raids={raids} onDismiss={ackRaids} onShoutout={shoutout} />
+        <RaidBanner
+          raids={raids}
+          onDismiss={ackRaids}
+          onShoutout={shoutout}
+          onReviewRaiders={() => {
+            setTab("flags");
+            ackRaids();
+          }}
+        />
         <nav className="tabs">
           {tabs.map((t) => (
             <button
@@ -410,10 +434,21 @@ export default function App() {
               deleted={deleted}
             />
           )}
-          {tab === "raids" && <RaidLog raids={raids} channelFilter={selected} now={now} onShoutout={shoutout} />}
+          {tab === "raids" && (
+            <RaidLog raids={raids} channelFilter={selected} now={now} onShoutout={shoutout} onReviewRaiders={() => setTab("flags")} />
+          )}
           {tab === "activity" && <ActivityFeed items={activity} channelFilter={selected} now={now} />}
           {tab === "modlog" && <ModLog entries={modLog} channelFilter={selected} now={now} onOpenUser={openUser} />}
-          {tab === "rules" && <Rules rules={rules} channels={channels} onRulesChanged={setRules} editRuleId={editRuleId} />}
+          {tab === "rules" && (
+            <Rules
+              rules={rules}
+              channels={channels}
+              onRulesChanged={setRules}
+              editRuleId={editRuleId}
+              toxicityOn={settings.toxicityEnabled}
+              toast={toast}
+            />
+          )}
           {tab === "tuning" && (
             <Tuning
               rules={rules}
@@ -429,6 +464,7 @@ export default function App() {
             <SettingsPanel
               settings={settings}
               onChange={updateSettings}
+              toxicity={toxicity}
               channelAlerts={
                 <ChannelAlerts
                   channels={channels}

@@ -480,6 +480,20 @@ impl Helix {
         r.data.into_iter().next().map(|u| u.id).ok_or_else(|| ApiError::Other(format!("No Twitch user named {login}")))
     }
 
+    /// A channel's follower count. Twitch returns the total for any channel, even ones you don't moderate.
+    pub async fn follower_total(&self, broadcaster_id: &str) -> Result<i64, ApiError> {
+        #[derive(Deserialize)]
+        struct Resp {
+            total: i64,
+        }
+        let id = broadcaster_id.to_string();
+        let resp = self
+            .send(|http, base| http.get(format!("{base}/channels/followers")).query(&[("broadcaster_id", id.as_str()), ("first", "1")]))
+            .await?;
+        let r: Resp = self.expect_ok(resp).await?.json().await?;
+        Ok(r.total)
+    }
+
     /// Look up accounts by login (up to 100 at a time), mainly for their creation dates.
     pub async fn users(&self, logins: &[String]) -> Result<Vec<UserInfo>, ApiError> {
         #[derive(Deserialize)]

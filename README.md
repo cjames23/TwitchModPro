@@ -2,7 +2,7 @@
 
 **One window for moderating all the Twitch chats you mod.**
 
-If you mod several streamers, you know the drill: a dozen chat tabs, scrolling fast, hoping you spot the problem message in time. Twitch Mod Pro watches every chat you moderate at once and pulls anything that needs your attention into **one queue**: rule matches, AutoMod holds, unban requests, spam waves and raids. You can deal with each item right there: delete, warn, time out or ban, without switching tabs.
+If you mod several streamers, you know the drill: a dozen chat tabs, scrolling fast, hoping you spot the problem message in time. Twitch Mod Pro watches every chat you moderate at once and pulls anything that needs your attention into **one queue**: rule matches, AutoMod holds, unban requests, spam waves, pile-ons, likely ban evaders and risky raids. You can deal with each item right there: delete, warn, time out or ban, without switching tabs.
 
 **[⬇ Download the latest version](https://github.com/cjames23/TwitchModPro/releases)** for macOS, Windows or Linux.
 
@@ -12,7 +12,7 @@ If you mod several streamers, you know the drill: a dozen chat tabs, scrolling f
 
 - [Getting started](#getting-started)
 - [A quick tour](#a-quick-tour)
-- [How it works](#how-it-works): flags, rules, test mode, **raid mode**, spam waves, alerts…
+- [How it works](#how-it-works): flags, rules, test mode, **raid mode**, raid risk, spam waves, pile-ons, ban evasion, the toxicity check, sharing rules, alerts…
 - [Keyboard shortcuts](#keyboard-shortcuts)
 - [Your data and privacy](#your-data-and-privacy)
 - [What Twitch doesn't allow](#what-twitch-doesnt-allow)
@@ -73,10 +73,10 @@ That's it. Flags start appearing as chat happens.
 | **Live chat** | Every channel's chat side by side, with flagged lines highlighted. Click a name to see that person's history. |
 | **Activity** | Follows, subs, gift subs, bits and announcements across your channels. |
 | **Mod log** | Everything any mod did in your channels (bans, timeouts, deletes, chat setting changes), with who did it. |
-| **Raids** | Every raid on your channels, with a **📣 Shoutout** button. |
-| **Rules** | What gets flagged. Edit the built-in rules or make your own. |
+| **Raids** | Every raid on your channels, with its **risk score** and a **📣 Shoutout** button. |
+| **Rules** | What gets flagged. Edit the built-in rules, make your own, or **share and import** rule packs. |
 | **Tuning** | How well each rule is working, with suggestions to make it less noisy. |
-| **Alerts** | When the app should pop up a notification or play a sound, overall and for each streamer. |
+| **Alerts** | When the app should pop up a notification or play a sound, overall and for each streamer. Also where you switch pile-on detection, ban-evasion matching and the toxicity check on or off. |
 
 The **sidebar** lists your channels. Click one to show only that channel everywhere. Each channel has:
 - a **⚙** button for its color, alert settings and shoutout message
@@ -141,6 +141,7 @@ The app comes with ready-made rules, grouped into packs:
 - **Harassment:** telling someone to die.
 - **Wellbeing:** self-harm statements. These show up as a **wellbeing check**, a gentle prompt to check in with the person, never a punishment.
 - **Chat quality:** backseating ("go left", "wrong way"; off by default).
+- **On-device AI:** toxic messages, scored by the built-in toxicity model. It only runs when you turn on the [toxicity check](#on-device-toxicity-check).
 
 All packs start in **test mode**. If you delete one by accident, **Tuning → Restore default rules** brings it back.
 
@@ -172,6 +173,17 @@ To use raid mode, open a rule and tick **Only during raid mode**. Good candidate
 
 > Raid mode only changes **which rules are active in this app**. It doesn't change the channel's settings on Twitch (followers-only, slow mode, etc.).
 
+### Raid risk score
+
+For 90 seconds after a raid, the app sizes it up and gives it a verdict: **Looks fine**, **Keep an eye on it**, or **Likely hate or bot raid**. It looks at:
+
+- **The raiding channel:** how old it is, how many followers it has, and whether it has raided your channels before (a good sign).
+- **The people who start chatting:** how many have brand-new accounts, whether several have near-identical names (`h8bot_101`, `h8bot_102`…), and how many set off your rules.
+
+Twitch doesn't say which chatters came with a raid, so anyone who starts chatting in that window and hadn't chatted before counts as a raider. The badge shows **watching** until the 90 seconds are up, and hovering over it (or clicking the raid in the **Raids** tab) shows the reasons.
+
+If a raid looks like a hate raid, you get a second alert, the banner turns red, and the suspicious raiders appear as one card in the flag queue (**Review raiders**). There you can **Ban all** or **Time out all**, and **Undo** afterwards, just like a spam wave.
+
 ### Raids and shoutouts
 
 When a channel you watch is raided, a banner appears at the top of the app, along with a desktop notification. Both show **which channel** was raided, **who** raided, and with **how many viewers**. Click **📣 Shoutout** to send Twitch's own shoutout for the raider. If the channel uses a bot command instead, set a chat message such as `!so @{raider}` in the channel's ⚙ settings and the app sends it too.
@@ -192,6 +204,45 @@ A wave shows up as one card at the top of the flag queue. From it you can:
 - **Ban all** or **Time out all**, after unticking anyone who shouldn't be included
 - **Undo** to unban everyone the app just acted on
 - mark it **Not spam** to ignore that pattern for 30 minutes
+
+### Pile-ons
+
+A **pile-on** is several chatters going after one person at the same time: a new viewer gets "nobody asked", "ratio", "L bozo" and "stfu" from four different people within a minute. No single message may break a rule, so keyword rules miss it.
+
+The app counts how many different chatters **reply to or @ the same person** in a short window, by default **4 chatters within 2 minutes**. At least half of them have to be **hostile**: setting off one of your rules, using common dismissive words ("stfu", "nobody asked", "ratio", "cope"…), or, with the toxicity check on, scoring as toxic. For the streamer, *every* one has to be hostile, since everyone talks to the streamer.
+
+A pile-on shows up as a card in the flag queue listing the hostile chatters, with **Ban all**, **Time out all** and **Undo**. Banter between friends can look the same, so read the messages first, and click **It's fine** to ignore it. Change the numbers or turn it off in **Alerts → Pile-ons**.
+
+### Ban evasion
+
+When someone chats for the first time, the app compares their name with everyone **banned in any of your channels in the last 90 days**. It flags names that are:
+
+- the same apart from numbers, underscores or lookalike letters: `troll_guy` → `troll_guy2`, `tr0ll_guy`, `TROLL_GUY_99`
+- one letter different, for longer names: `trollguy` → `trollguyy`
+- the banned name with a little added: `trollguy` → `trollguy_is_back`
+
+A match in the **same channel** is high severity; a match from another of your channels is medium. The card shows who they look like, and **Compare with … 's history** opens the banned user's history next to theirs. Names can match by chance, so check how they talk before acting. Turn it off in **Alerts → Ban evasion**.
+
+This is separate from Twitch's own **suspicious user** detection (in the [Twitch inbox](#the-twitch-inbox)), which uses information only Twitch has.
+
+### On-device toxicity check
+
+The app comes with a small AI model that scores how **toxic** a message is: insults, harassment and abuse that keyword lists miss because they don't use any particular word ("you are honestly the most useless runner I've ever watched").
+
+- **Off by default.** Turn it on in **Alerts → On-device toxicity check**, and off again any time.
+- **Private:** it runs entirely on your computer. No message is sent anywhere.
+- **Light:** about 10 ms per message on a typical laptop. If chat is busier than it can keep up with, it skips messages rather than slowing the app down (the settings show how many).
+- **What it flags is up to your rules.** The built-in **Toxic messages (AI)** rule flags messages the model is at least 85% sure about, and starts in test mode. You can make your own **Toxicity (AI)** rules with a different threshold, severity, channels or exceptions, and the **Try it** box shows how any message scores.
+- It also helps [pile-on detection](#pile-ons): a toxic reply counts as hostile.
+
+Limits: it's English only, it was trained on Wikipedia comments rather than Twitch chat (so emote names and in-jokes can score oddly), and it judges how *toxic* a message is, not whether it's creepy or inappropriate in a polite way. Check the **Tuning** tab before switching its rules on. The model is [MiniLMv2-toxic-jigsaw-lite](https://huggingface.co/minuva/MiniLMv2-toxic-jigsaw-lite) (Apache-2.0); see [src-tauri/resources/toxicity/README.md](src-tauri/resources/toxicity/README.md).
+
+### Sharing rules
+
+Mods of similar streamers can swap rules instead of each building their own. In the **Rules** tab, click **Share / import…**:
+
+- **Export:** tick the rules (or whole packs) to share, give the pack a name, then **Save file…** (a `.json` file) or **Copy as text** to paste in Discord. Your channel limits and per-channel alert settings are left out.
+- **Import:** **Open file…** or paste the text. Before anything is added, you see each rule marked **New**, **You already have this**, **Same name as one of yours** (skip it, add a copy, or replace yours), or **Can't be imported** (with the reason). Imported rules are grouped under the pack's name and come in **test mode** unless you untick it.
 
 ### Repeat offenders
 
@@ -239,7 +290,7 @@ In the **Flags** tab (press **?** to see this list in the app):
   - Windows: `%APPDATA%\com.twitchmodpro.app\`
   - Linux: `~/.local/share/com.twitchmodpro.app/`
 - Your Twitch login is kept in your system's **keychain** (macOS Keychain, Windows Credential Manager, or the Linux keyring), never in a plain file.
-- The app only talks to **Twitch**. There's no server, account or analytics.
+- The app only talks to **Twitch**. There's no server, account or analytics. The [toxicity check](#on-device-toxicity-check) runs on your computer too.
 - It only asks Twitch for **moderator** permissions. It never gets access to a streamer's account.
 
 ---
@@ -293,7 +344,7 @@ npm run tauri build    # build installers for this OS
 
 ```bash
 cd src-tauri
-cargo test                       # parser, rules, storage, Twitch API (against a mock server)
+cargo test                       # parser, rules, storage, Twitch API (against a mock server), the toxicity model
 cargo test -- --ignored live_    # also connects to real Twitch chat
 ```
 
@@ -314,7 +365,13 @@ src-tauri/src/
   rules.rs       Rules engine
   normalize.rs   Disguised-spelling detection
   packs.rs       Built-in rule packs
-  waves.rs       Spam-wave detection
+  waves.rs       Spam-wave detection (and the cards for pile-ons and risky raids)
+  raidwatch.rs   Raid risk score
+  evasion.rs     Ban-evasion name matching
+  pileon.rs      Pile-on detection
+  toxicity.rs    On-device toxicity model (BERT tokenizer + candle)
+  safety.rs      Wires raid risk, ban evasion, pile-ons and the toxicity model into chat
+  sharing.rs     Rule-pack export and import
   alerts.rs      When flags alert (channel levels, per-rule overrides)
   intel.rs       Account ages, other mods' actions, waves, inbox, bulk actions
   core.rs        Session, channels, chat processing, raid mode, shoutouts, user history
@@ -324,6 +381,7 @@ src/
   App.tsx        App state and wiring
   components/    The screens (flag queue, rules, tuning, alerts, feeds…)
   dev/preview.ts Fake backend for the UI preview
+src-tauri/resources/toxicity/   The bundled toxicity model (see its README)
 .github/workflows/release.yml   Builds and publishes releases on version tags
 ```
 
@@ -333,8 +391,8 @@ src/
 
 ## Roadmap
 
-- Raid vetting (the raider's account age and history), and switching on followers-only, slow mode or Shield Mode during raid mode
-- Sharing rule sets between mod teams
+- Switching on followers-only, slow mode or Shield Mode during raid mode
+- "Similar meaning" rules that catch creepy or parasocial messages from a few examples, using an on-device sentence model
 - Shift summaries for handing over to the next mod
 - A shared queue for whole mod teams
 - Automatic updates and code-signed installers

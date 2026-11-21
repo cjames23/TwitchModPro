@@ -94,6 +94,10 @@ struct UserHistory {
 }
 
 impl UserHistory {
+    fn seen(&self, channel: &str, login: &str) -> bool {
+        self.users.contains_key(&(channel.to_string(), login.to_string()))
+    }
+
     fn record(&mut self, msg: &ChatMessage, flag_severity: Option<Severity>) {
         if self.users.len() >= HISTORY_MAX_USERS {
             let cutoff = msg.timestamp - 2 * 60 * 60 * 1000;
@@ -192,11 +196,20 @@ pub struct Core {
     pub(crate) wave_cfg: Mutex<WaveConfig>,
     pub(crate) wave_notified: Mutex<HashSet<i64>>,
     pub(crate) eventsub: Mutex<Option<EventSubClient>>,
+    /// Which optional checks are on (cached from settings so chat doesn't read the database).
+    pub(crate) features: RwLock<crate::safety::Features>,
+    /// Raids still being watched, by channel.
+    pub(crate) raid_watch: Mutex<HashMap<String, crate::raidwatch::RaidWatch>>,
+    /// Recently banned users for ban-evasion matching, and when the list was loaded.
+    pub(crate) banned: Mutex<(i64, Vec<crate::evasion::Banned>)>,
+    pub(crate) pileons: Mutex<crate::pileon::PileOnDetector>,
+    pub(crate) toxicity: Mutex<crate::safety::ToxicityState>,
 }
 
 impl Core {
     pub fn new(app: AppHandle, db: Db, engine: RuleEngine) -> Self {
         let wave_cfg = wave_config(&db.settings());
+        let features = crate::safety::Features::from(&db.settings());
         Core {
             app,
             db: Mutex::new(db),
@@ -223,6 +236,11 @@ impl Core {
             wave_cfg: Mutex::new(wave_cfg),
             wave_notified: Mutex::new(HashSet::new()),
             eventsub: Mutex::new(None),
+            features: RwLock::new(features),
+            raid_watch: Mutex::new(HashMap::new()),
+            banned: Mutex::new((0, Vec::new())),
+            pileons: Mutex::new(Default::default()),
+            toxicity: Mutex::new(Default::default()),
         }
     }
 
@@ -574,7 +592,7 @@ impl Core {
 
     // ---------------- chat events ----------------
 
-    pub fn handle(&self, event: ChatEvent) {
+    pub fn handle(self: &Arc<Self>, event: ChatEvent) {
         match event {
             ChatEvent::Status(status) => {
                 let info = {
@@ -625,6 +643,9 @@ impl Core {
 
     fn on_chat(&self, msg: ChatMessage) {
         let raid_mode = self.in_raid_mode(&msg.channel);
+        let features = *self.features.read().unwrap();
+        // Whether this chatter has talked in this channel before (this session).
+        let known = self.history.lock().unwrap().seen(&msg.channel, &msg.user_login);
         let created_at = self.age_cache.lock().unwrap().get(&msg.user_login).copied();
         let key = (msg.channel.clone(), msg.user_login.clone());
         let (matches, needs_age) = {
@@ -646,6 +667,8 @@ impl Core {
             }
             (matches, needs_age)
         };
+        let evasion = if known { None } else { self.check_evasion(&msg, features) };
+        let toxicity_job = self.toxicity_job(&msg, features, EvalCtx { raid_mode, account_created_at: created_at });
         // Rules in test mode only record what they would have flagged.
         let (tests, mut matches): (Vec<RuleMatch>, Vec<RuleMatch>) = matches.into_iter().partition(|m| m.test_mode);
         self.record_test_hits(&msg, tests);
@@ -674,8 +697,8 @@ impl Core {
         let context = {
             let mut ctx = self.context.lock().unwrap();
             let history = ctx.entry(msg.channel.clone()).or_default();
-            let snapshot: Vec<ContextLine> =
-                if severity.is_some() || needs_age { history.iter().cloned().collect() } else { Vec::new() };
+            let wanted = severity.is_some() || needs_age || evasion.is_some() || toxicity_job.as_ref().is_some_and(|j| !j.rules.is_empty());
+            let snapshot: Vec<ContextLine> = if wanted { history.iter().cloned().collect() } else { Vec::new() };
             history.push_back(line);
             while history.len() > CONTEXT_BEFORE {
                 history.pop_front();
@@ -707,7 +730,7 @@ impl Core {
                 text: msg.text.clone(),
                 severity,
                 matches,
-                context,
+                context: context.clone(),
                 context_after: vec![],
                 timestamp: msg.timestamp,
                 status: "open".into(),
@@ -719,6 +742,15 @@ impl Core {
             self.add_flag(flag);
         }
 
+        if let Some((banned, why)) = evasion {
+            self.add_evasion_flag(&msg, &banned, why, context.clone(), created_at);
+        }
+        self.watch_raid_chat(&msg, known, severity.is_some());
+        self.observe_pileon(&msg, severity.is_some(), features);
+        if let Some(mut job) = toxicity_job {
+            job.context = context;
+            self.queue_toxicity(job);
+        }
         self.observe_waves(&msg);
         self.pending_chat.lock().unwrap().push(LiveMessage { msg, flag_severity: severity });
     }
@@ -767,6 +799,7 @@ impl Core {
                 "automod" => "AutoMod is holding a message".to_string(),
                 "unbanRequest" => "New unban request".to_string(),
                 "suspicious" => "Suspicious user".to_string(),
+                "evasion" => "Possible ban evader".to_string(),
                 _ => flag.matches.iter().map(|m| m.rule_name.as_str()).collect::<Vec<_>>().join(", "),
             };
             self.notify(&format!("#{}: {what}", flag.channel), &format!("{}: {}", flag.display_name, flag.text));
@@ -775,7 +808,7 @@ impl Core {
         flag
     }
 
-    fn on_raid(&self, notice: RaidNotice) {
+    fn on_raid(self: &Arc<Self>, notice: RaidNotice) {
         let (raid, settings, (level, channel_sound)): (Raid, _, _) = {
             let db = self.db.lock().unwrap();
             let raid = match db.insert_raid(&notice) {
@@ -804,6 +837,7 @@ impl Core {
             );
         }
         let sound = alert && channel_sound && settings.play_sounds;
+        self.start_raid_watch(&raid);
         let _ = self.app.emit("raid", serde_json::json!({ "raid": raid, "alert": alert, "sound": sound }));
     }
 

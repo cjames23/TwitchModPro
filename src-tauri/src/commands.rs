@@ -42,6 +42,7 @@ pub struct Snapshot {
     waves: Vec<Wave>,
     /// Recent warns/timeouts/bans across all channels (for cross-channel notes and the ladder).
     sanctions: Vec<ModAction>,
+    toxicity: crate::safety::ToxicityInfo,
 }
 
 #[tauri::command]
@@ -51,6 +52,7 @@ pub fn get_snapshot(state: State<AppState>) -> Result<Snapshot, String> {
     let raid_modes = core.raid_modes();
     let waves = core.waves();
     let sanctions = core.sanctions()?;
+    let toxicity = core.toxicity_info();
     let db = core.db.lock().unwrap();
     Ok(Snapshot {
         channels: db.channels()?,
@@ -63,6 +65,7 @@ pub fn get_snapshot(state: State<AppState>) -> Result<Snapshot, String> {
         raid_modes,
         waves,
         sanctions,
+        toxicity,
     })
 }
 
@@ -267,7 +270,13 @@ fn set_channel_alerts_for(core: &crate::core::Core, channel: &str, alert: &str, 
 
 /// Try a rule against sample text without saving it.
 #[tauri::command]
-pub fn test_rule(rule: Rule, text: String, username: Option<String>, first_message: Option<bool>) -> Result<Vec<RuleMatch>, String> {
+pub async fn test_rule(
+    state: State<'_, AppState>,
+    rule: Rule,
+    text: String,
+    username: Option<String>,
+    first_message: Option<bool>,
+) -> Result<Vec<RuleMatch>, String> {
     rules::validate(&rule)?;
     let mut rule = rule;
     rule.enabled = true;
@@ -293,6 +302,19 @@ pub fn test_rule(rule: Rule, text: String, username: Option<String>, first_messa
         timestamp: now_ms(),
     };
     let engine = RuleEngine::new(&[rule.clone()]);
+    if rule.kind == rules::RuleKind::Toxicity {
+        let model = state.core.toxicity_model().ok_or("Turn on the on-device toxicity check in Settings to test this rule.")?;
+        let sample = msg.text.clone();
+        let scores = tauri::async_runtime::spawn_blocking(move || model.score(&sample)).await.map_err(|e| e.to_string())??;
+        let ids = engine.toxicity_rules(&msg, rules::EvalCtx { raid_mode: true, account_created_at: None });
+        let mut out = engine.toxicity_matches(&ids, scores.toxic, scores.severe);
+        if out.is_empty() {
+            // Show the score even when it's under the threshold, so the threshold can be tuned.
+            return Err(format!("Not flagged: the model scored this {:.0}% toxic (this rule flags at {}%).", scores.toxic * 100.0, rule.params.toxicity_percent));
+        }
+        out.iter_mut().for_each(|m| m.test_mode = false);
+        return Ok(out);
+    }
     // Repeat rules need several messages; send the sample enough times to show what happens.
     if rule.kind == rules::RuleKind::Repeat {
         for _ in 1..rule.params.repeat_count {
@@ -349,9 +371,91 @@ pub fn save_settings(state: State<AppState>, settings: Settings) -> Result<Setti
     if settings.ladder.is_empty() {
         settings.ladder = Settings::default().ladder;
     }
+    settings.pile_on_min_users = settings.pile_on_min_users.clamp(2, 50);
+    settings.pile_on_window_secs = settings.pile_on_window_secs.clamp(15, 900);
     db.save_settings(&settings)?;
     *state.core.wave_cfg.lock().unwrap() = crate::core::wave_config(&settings);
-    Ok(db.settings())
+    let saved = db.settings();
+    drop(db);
+    state.core.refresh_features(&saved);
+    Ok(saved)
+}
+
+#[tauri::command]
+pub fn get_toxicity_status(state: State<AppState>) -> crate::safety::ToxicityInfo {
+    state.core.toxicity_info()
+}
+
+/// Score a sample message with the on-device model (for the rule editor).
+#[tauri::command]
+pub async fn score_toxicity(state: State<'_, AppState>, text: String) -> Result<crate::toxicity::Scores, String> {
+    let model = state.core.toxicity_model().ok_or("Turn on the on-device toxicity check in Settings first.")?;
+    tauri::async_runtime::spawn_blocking(move || model.score(&text)).await.map_err(|e| e.to_string())?
+}
+
+// ---------------- rule sharing ----------------
+
+fn rule_file_path(path: &str) -> Result<std::path::PathBuf, String> {
+    let p = std::path::PathBuf::from(path);
+    match p.extension().and_then(|e| e.to_str()) {
+        Some(e) if e.eq_ignore_ascii_case("json") => Ok(p),
+        _ => Err("Rule packs are .json files.".into()),
+    }
+}
+
+/// The chosen rules as rule-pack JSON (to save to a file or copy).
+#[tauri::command]
+pub fn export_rules(state: State<AppState>, ids: Vec<i64>, name: String, description: String) -> Result<String, String> {
+    if name.trim().is_empty() {
+        return Err("Give the pack a name.".into());
+    }
+    let rules: Vec<Rule> = state.core.db.lock().unwrap().rules()?.into_iter().filter(|r| ids.contains(&r.id)).collect();
+    if rules.is_empty() {
+        return Err("Pick at least one rule to export.".into());
+    }
+    let file = crate::sharing::export(&rules, &name, &description, now_ms());
+    serde_json::to_string_pretty(&file).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn save_rule_file(path: String, text: String) -> Result<(), String> {
+    std::fs::write(rule_file_path(&path)?, text).map_err(|e| format!("Couldn't save the file: {e}"))
+}
+
+#[tauri::command]
+pub fn read_rule_file(path: String) -> Result<String, String> {
+    let p = rule_file_path(&path)?;
+    let size = std::fs::metadata(&p).map_err(|e| format!("Couldn't open the file: {e}"))?.len();
+    if size as usize > crate::sharing::MAX_BYTES {
+        return Err("That file is too big to be a rule pack (over 2 MB).".into());
+    }
+    std::fs::read_to_string(&p).map_err(|e| format!("Couldn't read the file: {e}"))
+}
+
+#[tauri::command]
+pub fn preview_rule_import(state: State<AppState>, text: String) -> Result<crate::sharing::ImportPreview, String> {
+    let existing = state.core.db.lock().unwrap().rules()?;
+    crate::sharing::preview(&text, &existing)
+}
+
+/// Import rules from rule-pack text. `choices` pairs each rule's index with skip / add / replace.
+#[tauri::command]
+pub fn import_rules(
+    state: State<AppState>,
+    text: String,
+    choices: Vec<(usize, crate::sharing::ImportChoice)>,
+    group: String,
+    test_mode: bool,
+) -> Result<Vec<Rule>, String> {
+    {
+        let db = state.core.db.lock().unwrap();
+        let existing = db.rules()?;
+        let preview = crate::sharing::preview(&text, &existing)?;
+        for rule in crate::sharing::apply(&preview, &choices, &group, test_mode, &existing) {
+            db.save_rule(&rule)?;
+        }
+    }
+    rebuild_engine(&state.core)
 }
 
 // ---------------- moderation ----------------

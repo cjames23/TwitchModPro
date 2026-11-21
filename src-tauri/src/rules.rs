@@ -37,6 +37,8 @@ pub enum RuleKind {
     NewAccount,
     /// One user addressing the streamer many times in a short period.
     Fixation,
+    /// Scored by the on-device toxicity model (Settings → On-device toxicity check).
+    Toxicity,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -86,6 +88,8 @@ pub struct RuleParams {
     pub fixation_count: usize,
     /// ...within this many minutes.
     pub fixation_window_mins: u64,
+    /// Toxicity: flag when the model is at least this sure (percent).
+    pub toxicity_percent: u8,
 }
 
 impl Default for RuleParams {
@@ -100,6 +104,7 @@ impl Default for RuleParams {
             max_account_age_days: 7,
             fixation_count: 8,
             fixation_window_mins: 10,
+            toxicity_percent: 85,
         }
     }
 }
@@ -416,6 +421,12 @@ fn compile(rule: &Rule) -> Result<CompiledRule, String> {
             }
             Matcher::Builtin
         }
+        RuleKind::Toxicity => {
+            if !(1..=99).contains(&rule.params.toxicity_percent) {
+                return Err("The toxicity threshold must be between 1% and 99%.".into());
+            }
+            Matcher::Builtin
+        }
     };
     let also = match (uses_terms && rule.target == Target::Message, clean(&rule.also_patterns)) {
         (true, list) if !list.is_empty() => Some(
@@ -653,6 +664,42 @@ impl RuleEngine {
 
     pub fn kind_of(&self, rule_id: i64) -> Option<RuleKind> {
         self.rules.iter().find(|c| c.rule.id == rule_id).map(|c| c.rule.kind)
+    }
+
+    /// Toxicity rules that apply to this message (so it's worth scoring).
+    pub fn toxicity_rules(&self, msg: &ChatMessage, ctx: EvalCtx) -> Vec<i64> {
+        let mut text = Text::new(&msg.text);
+        self.rules
+            .iter()
+            .filter(|c| c.rule.kind == RuleKind::Toxicity)
+            .filter(|c| applies(&c.rule, msg, ctx))
+            .filter(|c| !c.rule.addressed_to_streamer || addressed_to_streamer(msg))
+            .filter(|c| !c.rule.not_to_other_chatters || !to_other_chatter(msg))
+            .filter(|c| c.exceptions.as_ref().is_none_or(|ex| ex.find(&mut text).is_empty()))
+            .map(|c| c.rule.id)
+            .collect()
+    }
+
+    /// Matches for the given toxicity rules once the model has scored the message.
+    pub fn toxicity_matches(&self, rule_ids: &[i64], toxic: f32, severe: f32) -> Vec<RuleMatch> {
+        let pct = (toxic * 100.0).round() as u8;
+        self.rules
+            .iter()
+            .filter(|c| rule_ids.contains(&c.rule.id) && pct >= c.rule.params.toxicity_percent)
+            .map(|c| {
+                let severe = (severe >= 0.3).then(|| format!(", severe {:.0}%", severe * 100.0)).unwrap_or_default();
+                RuleMatch {
+                    rule_id: c.rule.id,
+                    rule_name: c.rule.name.clone(),
+                    severity: c.rule.severity,
+                    terms: vec![],
+                    reason: Some(format!("Toxicity model: {pct}% toxic{severe}")),
+                    patterns: vec![],
+                    test_mode: c.rule.mode == RuleMode::Test,
+                    wellbeing: c.rule.wellbeing,
+                }
+            })
+            .collect()
     }
 
     /// Whether an enabled new-account rule applies to this message (so its sender's age is worth looking up).
@@ -894,6 +941,28 @@ mod tests {
 
     fn check(r: Rule, text: &str) -> Vec<RuleMatch> {
         RuleEngine::new(&[r]).evaluate(&msg("streamer", text), false)
+    }
+
+    #[test]
+    fn toxicity_rules_apply_thresholds_and_exemptions() {
+        let mut r = rule(RuleKind::Toxicity, &[]);
+        r.params.toxicity_percent = 80;
+        r.exempt_privileged = true;
+        r.exceptions = vec!["just kidding".into()];
+        let engine = RuleEngine::new(&[r.clone()]);
+        // Scored asynchronously, so the normal check never matches.
+        assert!(engine.evaluate(&msg("streamer", "you idiot"), false).is_empty());
+        let ids = engine.toxicity_rules(&msg("streamer", "you idiot"), EvalCtx::default());
+        assert_eq!(ids, vec![1]);
+        assert!(engine.toxicity_rules(&msg("streamer", "you idiot just kidding"), EvalCtx::default()).is_empty());
+        let mut modmsg = msg("streamer", "you idiot");
+        modmsg.is_mod = true;
+        assert!(engine.toxicity_rules(&modmsg, EvalCtx::default()).is_empty());
+        assert!(engine.toxicity_matches(&ids, 0.79, 0.0).is_empty());
+        let m = engine.toxicity_matches(&ids, 0.93, 0.4);
+        assert_eq!(m[0].reason.as_deref(), Some("Toxicity model: 93% toxic, severe 40%"));
+        r.params.toxicity_percent = 0;
+        assert!(validate(&r).is_err());
     }
 
     #[test]

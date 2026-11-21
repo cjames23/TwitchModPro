@@ -26,6 +26,10 @@ pub enum WaveKind {
     SameMessage,
     SimilarNames,
     FirstTimeBurst,
+    /// Several chatters going after one person (key: the target's login).
+    PileOn,
+    /// Suspicious chatters who arrived with a raid (key: the raider's login).
+    RaidRaiders,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -57,10 +61,16 @@ pub struct Wave {
     /// "open", "actioned" or "dismissed"
     pub status: String,
     pub severity: crate::rules::Severity,
+    /// Extra explanation for the card, e.g. "6 chatters @'d them in 2 minutes; 4 were hostile".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
 }
 
 impl Wave {
     fn refresh_severity(&mut self) {
+        if matches!(self.kind, WaveKind::PileOn | WaveKind::RaidRaiders) {
+            return; // set by whoever reports them
+        }
         let firsts = self.members.iter().filter(|m| m.first_message).count();
         self.severity = if self.channels.len() > 1 || firsts * 2 >= self.members.len() {
             crate::rules::Severity::High
@@ -210,8 +220,68 @@ impl WaveDetector {
             members,
             status: "open".into(),
             severity: crate::rules::Severity::Medium,
+            detail: None,
         };
         wave.refresh_severity();
+        self.waves.insert(0, wave.clone());
+        self.waves.truncate(MAX_WAVES);
+        Some(wave)
+    }
+
+    /// Create or grow a wave found by another detector (pile-ons, risky raids).
+    /// Returns it if anything changed, or `None` if the pattern was dismissed recently.
+    pub fn upsert(
+        &mut self,
+        kind: WaveKind,
+        key: &str,
+        members: Vec<WaveMember>,
+        severity: crate::rules::Severity,
+        detail: Option<String>,
+        now: i64,
+    ) -> Option<Wave> {
+        if self.suppressed.get(&(kind, key.to_string())).is_some_and(|until| *until > now) {
+            return None;
+        }
+        if let Some(w) = self
+            .waves
+            .iter_mut()
+            .find(|w| w.kind == kind && w.key == key && w.status != "dismissed" && now - w.last_seen < WAVE_IDLE_MS)
+        {
+            let mut changed = w.detail != detail || w.severity != severity;
+            for m in members {
+                if w.members.len() < MAX_MEMBERS && !w.members.iter().any(|x| x.login == m.login && x.channel == m.channel) {
+                    w.channels.insert(m.channel.clone());
+                    w.members.push(m);
+                    changed = true;
+                }
+            }
+            if !changed {
+                return None;
+            }
+            w.last_seen = now;
+            w.severity = severity;
+            w.detail = detail;
+            if w.status == "actioned" && w.members.iter().any(|m| m.outcome.is_none()) {
+                w.status = "open".into(); // new people joined after the last bulk action
+            }
+            return Some(w.clone());
+        }
+        if members.is_empty() {
+            return None;
+        }
+        self.next_id += 1;
+        let wave = Wave {
+            id: self.next_id,
+            kind,
+            key: key.to_string(),
+            channels: members.iter().map(|m| m.channel.clone()).collect(),
+            first_seen: members.iter().map(|m| m.timestamp).min().unwrap_or(now),
+            last_seen: now,
+            members,
+            status: "open".into(),
+            severity,
+            detail,
+        };
         self.waves.insert(0, wave.clone());
         self.waves.truncate(MAX_WAVES);
         Some(wave)
@@ -328,5 +398,29 @@ mod tests {
         for (i, u) in ["d1d", "e1e", "f1f", "g1g"].iter().enumerate() {
             assert!(d.observe(&msg(u, "one", text, 10 + i as i64), CFG).is_empty());
         }
+    }
+
+    #[test]
+    fn upsert_creates_grows_and_respects_dismissal() {
+        use crate::rules::Severity;
+        let member = |login: &str| WaveMember {
+            login: login.into(),
+            display_name: login.into(),
+            user_id: None,
+            channel: "one".into(),
+            message_id: format!("m-{login}"),
+            text: "@bob stfu".into(),
+            timestamp: 0,
+            first_message: false,
+            outcome: None,
+        };
+        let mut d = WaveDetector::default();
+        let w = d.upsert(WaveKind::PileOn, "bob", vec![member("a"), member("b")], Severity::Medium, None, 0).unwrap();
+        assert_eq!(w.members.len(), 2);
+        assert!(d.upsert(WaveKind::PileOn, "bob", vec![member("a")], Severity::Medium, None, 1).is_none()); // nothing new
+        let grown = d.upsert(WaveKind::PileOn, "bob", vec![member("c")], Severity::High, None, 2).unwrap();
+        assert_eq!((grown.id, grown.members.len(), grown.severity), (w.id, 3, Severity::High));
+        d.dismiss(w.id, 3);
+        assert!(d.upsert(WaveKind::PileOn, "bob", vec![member("z")], Severity::High, None, 4).is_none());
     }
 }

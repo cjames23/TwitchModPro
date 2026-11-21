@@ -41,6 +41,7 @@ const KIND_LABEL: Record<FlagKind, string> = {
   automod: "AutoMod",
   unbanRequest: "Unban requests",
   suspicious: "Suspicious users",
+  evasion: "Possible ban evaders",
 };
 
 const SHORTCUTS: [string, string][] = [
@@ -320,6 +321,17 @@ export function FlagQueue(p: Props) {
                 <span className="msg-text">{f.text ? highlight(f.text, terms) : <em className="muted-text">(no message)</em>}</span>
               </div>
               {reasons.length > 0 && <div className="reasons">{reasons.join(" · ")}</div>}
+              {f.kind === "evasion" && f.meta.evasionOf && (
+                <div className="reasons">
+                  <button
+                    className="link-button"
+                    onClick={() => p.onOpenUser(f.meta.evasionChannel ?? f.channel, f.meta.evasionOf!)}
+                  >
+                    Compare with {f.meta.evasionOf}'s history
+                  </button>{" "}
+                  · Names alone can match by chance; check how they talk before acting.
+                </div>
+              )}
               {wellbeing && (
                 <div className="wellbeing-note">
                   This chatter may be struggling. Consider checking in with them or letting the streamer know, rather than
@@ -405,7 +417,7 @@ export function FlagQueue(p: Props) {
                   </>
                 )}
                 <span className="spacer" />
-                {f.kind === "rule" && (
+                {(f.kind === "rule" || f.kind === "evasion") && (
                   <button className="ghost" onClick={() => setExpanded(isOpen ? null : f.id)} title="Context (C)">
                     {isOpen ? "Hide context" : "Context"}
                   </button>

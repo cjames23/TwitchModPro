@@ -17,13 +17,35 @@ function headline(w: Wave) {
       return `${n} accounts with names like “${w.key}…”`;
     case "firstTimeBurst":
       return `${n} first-time chatters at once`;
+    case "pileOn":
+      return w.channels.includes(w.key)
+        ? `Chatters piling on the streamer`
+        : `Chatters piling on @${w.key}`;
+    case "raidRaiders":
+      return `${n} suspicious account${n === 1 ? "" : "s"} from ${w.key}'s raid`;
   }
 }
+
+const TAG: Record<Wave["kind"], string> = {
+  sameMessage: "Spam wave",
+  similarNames: "Spam wave",
+  firstTimeBurst: "Spam wave",
+  pileOn: "Pile-on",
+  raidRaiders: "Risky raid",
+};
+
+const DEFAULT_REASON: Record<Wave["kind"], string> = {
+  sameMessage: "Spam wave",
+  similarNames: "Spam wave",
+  firstTimeBurst: "Spam wave",
+  pileOn: "Harassing another chatter",
+  raidRaiders: "Hate raid",
+};
 
 export function WaveCard({ wave, now, handlers }: { wave: Wave; now: number; handlers: WaveHandlers }) {
   const [open, setOpen] = useState(false);
   const [exclude, setExclude] = useState<Set<string>>(new Set());
-  const [reason, setReason] = useState("Spam wave");
+  const [reason, setReason] = useState(DEFAULT_REASON[wave.kind]);
   const [busy, setBusy] = useState(false);
   const [confirm, setConfirm] = useState<null | "ban" | "timeout">(null);
 
@@ -45,7 +67,7 @@ export function WaveCard({ wave, now, handlers }: { wave: Wave; now: number; han
   return (
     <article className={`wave-card sev-${wave.severity} status-${wave.status}`}>
       <div className="flag-top">
-        <span className="wave-tag">Spam wave</span>
+        <span className={`wave-tag ${wave.kind}`}>{TAG[wave.kind]}</span>
         <span className={`sev-badge ${wave.severity}`}>{wave.severity}</span>
         {wave.channels.map((c) => (
           <span key={c} className="chan-tag" style={{ borderColor: channelColor(c), color: channelColor(c) }}>
@@ -57,6 +79,13 @@ export function WaveCard({ wave, now, handlers }: { wave: Wave; now: number; han
       </div>
       <div className="wave-headline">{headline(wave)}</div>
       {wave.kind === "sameMessage" && <div className="wave-sample">“{sample}”</div>}
+      {wave.detail && <div className="reasons">{wave.detail}</div>}
+      {wave.kind === "pileOn" && (
+        <div className="reasons">
+          Only the chatters whose messages looked hostile are listed. Banter between friends can look like this too, so
+          read the messages first.
+        </div>
+      )}
       {wave.kind === "firstTimeBurst" && (
         <div className="reasons">This can be normal right after a raid. Check the list before acting.</div>
       )}
@@ -122,7 +151,7 @@ export function WaveCard({ wave, now, handlers }: { wave: Wave; now: number; han
           )}
           {wave.status === "open" && (
             <button className="ghost" onClick={() => handlers.dismiss(wave)} title="Hide this and ignore the same pattern for 30 minutes">
-              Not spam
+              {wave.kind === "pileOn" ? "It's fine" : wave.kind === "raidRaiders" ? "Raid is fine" : "Not spam"}
             </button>
           )}
           <span className="spacer" />

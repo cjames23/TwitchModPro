@@ -37,6 +37,9 @@
       "signingIdentity": "-"
     },
     "shortDescription": "Multi-chat moderation tool for Twitch",
-    "category": "Utility"
+    "category": "Utility",
+    "resources": {
+      "resources/toxicity/": "toxicity/"
+    }
   }
 }

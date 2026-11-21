@@ -158,6 +158,9 @@ pub struct Raid {
     /// When you sent a shoutout for this raid, if you did.
     #[serde(default)]
     pub shoutout_at: Option<i64>,
+    /// How likely this is a hate or bot raid (filled in during the first 90 seconds).
+    #[serde(default)]
+    pub risk: Option<crate::raidwatch::RaidRisk>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -179,6 +182,14 @@ pub struct Settings {
     /// Accounts needed before a spam wave is flagged.
     pub wave_min_accounts: i64,
     pub wave_window_secs: i64,
+    /// Flag new chatters whose names look like recently banned users.
+    pub evasion_check: bool,
+    /// Detect several chatters going after one person.
+    pub pile_on_enabled: bool,
+    pub pile_on_min_users: i64,
+    pub pile_on_window_secs: i64,
+    /// Run the bundled toxicity model on chat (uses some CPU; off by default).
+    pub toxicity_enabled: bool,
 }
 
 impl Default for Settings {
@@ -200,6 +211,11 @@ impl Default for Settings {
             ladder_lookback_days: 30,
             wave_min_accounts: 5,
             wave_window_secs: 60,
+            evasion_check: true,
+            pile_on_enabled: true,
+            pile_on_min_users: 4,
+            pile_on_window_secs: 120,
+            toxicity_enabled: false,
         }
     }
 }
@@ -429,6 +445,17 @@ impl Db {
                 )
                 .map_err(err)?;
         }
+        if version < 6 {
+            self.conn
+                .execute_batch(
+                    "BEGIN;
+                     ALTER TABLE raids ADD COLUMN risk TEXT;
+                     CREATE INDEX IF NOT EXISTS mod_actions_action_ts ON mod_actions(action, ts);
+                     PRAGMA user_version = 6;
+                     COMMIT;",
+                )
+                .map_err(err)?;
+        }
         self.assign_missing_colors()?;
         Ok(())
     }
@@ -445,6 +472,7 @@ impl Db {
         }
         self.seed_packs()?;
         self.upgrade_packs()?;
+        self.add_toxicity_rule()?;
         Ok(())
     }
 
@@ -479,6 +507,24 @@ impl Db {
             self.save_rule(&r)?;
         }
         self.conn.execute("INSERT INTO settings (key, value) VALUES ('packs_v2', '1')", []).map_err(err)?;
+        Ok(())
+    }
+
+    /// Add the on-device toxicity rule for people who installed before it existed (once).
+    fn add_toxicity_rule(&self) -> DbResult<()> {
+        let done: Option<String> = self
+            .conn
+            .query_row("SELECT value FROM settings WHERE key = 'packs_v3'", [], |r| r.get(0))
+            .optional()
+            .map_err(err)?;
+        if done.is_some() {
+            return Ok(());
+        }
+        let r = crate::packs::toxicity_rule();
+        if !self.rules()?.iter().any(|x| x.pack == r.pack && x.name == r.name) {
+            self.save_rule(&r)?;
+        }
+        self.conn.execute("INSERT INTO settings (key, value) VALUES ('packs_v3', '1')", []).map_err(err)?;
         Ok(())
     }
 
@@ -810,6 +856,24 @@ impl Db {
         Ok(self.query_flags("id = ?2", params![1, id])?.into_iter().next())
     }
 
+    /// The open rule flag for a chat message, if there is one.
+    pub fn open_flag_for_message(&self, channel: &str, message_id: &str) -> Option<Flag> {
+        self.query_flags("kind = 'rule' AND status = 'open' AND channel = ?2 AND message_id = ?3", params![1, channel, message_id])
+            .ok()?
+            .into_iter()
+            .next()
+    }
+
+    pub fn update_flag_matches(&self, id: i64, severity: Severity, matches: &[RuleMatch]) -> DbResult<()> {
+        self.conn
+            .execute(
+                "UPDATE flags SET severity = ?2, matches = ?3 WHERE id = ?1",
+                params![id, serde_json::to_string(&severity).map_err(err)?, serde_json::to_string(matches).map_err(err)?],
+            )
+            .map_err(err)?;
+        Ok(())
+    }
+
     pub fn open_flag_exists(&self, kind: &str, channel: &str, login: &str) -> bool {
         self.conn
             .query_row(
@@ -1003,7 +1067,21 @@ impl Db {
             acknowledged: false,
             from_user_id: raid.from_user_id.clone(),
             shoutout_at: None,
+            risk: None,
         })
+    }
+
+    pub fn set_raid_risk(&self, id: i64, risk: &crate::raidwatch::RaidRisk) -> DbResult<()> {
+        let data = serde_json::to_string(risk).map_err(err)?;
+        self.conn.execute("UPDATE raids SET risk = ?2 WHERE id = ?1", params![id, data]).map_err(err)?;
+        Ok(())
+    }
+
+    /// Raids from this channel into any of yours before `before_id`.
+    pub fn prior_raids_from(&self, from_login: &str, before_id: i64) -> i64 {
+        self.conn
+            .query_row("SELECT COUNT(*) FROM raids WHERE from_login = ?1 AND id < ?2", params![from_login, before_id], |r| r.get(0))
+            .unwrap_or(0)
     }
 
     pub fn raids(&self, limit: i64) -> DbResult<Vec<Raid>> {
@@ -1023,7 +1101,7 @@ impl Db {
         let mut stmt = self
             .conn
             .prepare(&format!(
-                "SELECT id, channel, from_login, from_display_name, viewers, ts, acknowledged, from_user_id, shoutout_at
+                "SELECT id, channel, from_login, from_display_name, viewers, ts, acknowledged, from_user_id, shoutout_at, risk
                  FROM raids WHERE {filter} ORDER BY ts DESC, id DESC LIMIT ?1"
             ))
             .map_err(err)?;
@@ -1039,6 +1117,7 @@ impl Db {
                     acknowledged: r.get::<_, i64>(6)? != 0,
                     from_user_id: r.get(7)?,
                     shoutout_at: r.get(8)?,
+                    risk: r.get::<_, Option<String>>(9)?.and_then(|t| serde_json::from_str(&t).ok()),
                 })
             })
             .map_err(err)?;
@@ -1157,6 +1236,22 @@ impl Db {
             "ok = 1 AND action IN ('warn', 'timeout', 'ban', 'unban') AND ts >= ?2",
             params![limit, since_ms],
         )
+    }
+
+    /// Users banned since `since_ms` (by anyone) who haven't been unbanned since: (channel, login, banned at).
+    pub fn current_bans(&self, since_ms: i64) -> DbResult<Vec<(String, String, i64)>> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT a.channel, a.target_login, MAX(a.ts) FROM mod_actions a
+                 WHERE a.ok = 1 AND a.action = 'ban' AND a.ts >= ?1
+                   AND NOT EXISTS (SELECT 1 FROM mod_actions u WHERE u.ok = 1 AND u.action = 'unban'
+                                   AND u.channel = a.channel AND u.target_login = a.target_login AND u.ts > a.ts)
+                 GROUP BY a.channel, a.target_login",
+            )
+            .map_err(err)?;
+        let rows = stmt.query_map(params![since_ms], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).map_err(err)?;
+        rows.collect::<Result<_, _>>().map_err(err)
     }
 
     /// Whether this app already logged the same action recently (so the echo from chat isn't counted twice).

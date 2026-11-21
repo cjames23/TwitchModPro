@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import type { Channel, Rule, RuleKind, RuleMatch, RuleParams, Severity } from "../types";
 import { api } from "../api";
 import { highlight } from "../util";
+import { RuleSharing } from "./RuleSharing";
 
 const DEFAULT_PARAMS: RuleParams = {
   minLength: 12,
@@ -13,6 +14,7 @@ const DEFAULT_PARAMS: RuleParams = {
   maxAccountAgeDays: 7,
   fixationCount: 8,
   fixationWindowMins: 10,
+  toxicityPercent: 85,
 };
 
 const KINDS: { kind: RuleKind; label: string; help: string }[] = [
@@ -32,6 +34,11 @@ const KINDS: { kind: RuleKind; label: string; help: string }[] = [
     kind: "newAccount",
     label: "New accounts",
     help: "Accounts created recently. Checked with Twitch within about a second, and flagged once per user per channel.",
+  },
+  {
+    kind: "toxicity",
+    label: "Toxicity (AI)",
+    help: "Messages the on-device toxicity model scores as insulting or abusive. Needs Settings → On-device toxicity check.",
   },
 ];
 
@@ -70,10 +77,14 @@ interface Props {
   onRulesChanged: (rules: Rule[]) => void;
   /** Open this rule in the editor (e.g. from the Tuning view). */
   editRuleId?: number | null;
+  /** Whether the on-device toxicity model is switched on. */
+  toxicityOn: boolean;
+  toast: (text: string, kind?: "info" | "error") => void;
 }
 
-export function Rules({ rules, channels, onRulesChanged, editRuleId }: Props) {
+export function Rules({ rules, channels, onRulesChanged, editRuleId, toxicityOn, toast }: Props) {
   const [editing, setEditing] = useState<Rule | null>(null);
+  const [sharing, setSharing] = useState(false);
 
   useEffect(() => {
     if (editRuleId) setEditing(rules.find((r) => r.id === editRuleId) ?? null);
@@ -101,7 +112,23 @@ export function Rules({ rules, channels, onRulesChanged, editRuleId }: Props) {
     <section className="panel">
       <header className="panel-header">
         <h2>Rules</h2>
-        <button className="primary" onClick={() => setEditing(blankRule())}>
+        <span className="spacer" />
+        <button
+          onClick={() => {
+            setEditing(null);
+            setSharing((s) => !s);
+          }}
+          title="Export rules to share with other mods, or import theirs"
+        >
+          {sharing ? "Close sharing" : "Share / import…"}
+        </button>
+        <button
+          className="primary"
+          onClick={() => {
+            setSharing(false);
+            setEditing(blankRule());
+          }}
+        >
           + New rule
         </button>
       </header>
@@ -119,7 +146,13 @@ export function Rules({ rules, channels, onRulesChanged, editRuleId }: Props) {
                 <input type="checkbox" checked={r.enabled} onChange={() => toggle(r)} />
                 <span />
               </label>
-              <button className="rule-main" onClick={() => setEditing(r)}>
+              <button
+                className="rule-main"
+                onClick={() => {
+                  setSharing(false);
+                  setEditing(r);
+                }}
+              >
                 <div className="rule-title">
                   {r.name} <span className={`sev-badge ${r.severity}`}>{r.severity}</span>
                   {r.activeDuring === "raid" && <span className="raid-tag">⚡ raid</span>}
@@ -135,11 +168,21 @@ export function Rules({ rules, channels, onRulesChanged, editRuleId }: Props) {
           ))}
         </div>
 
-        {editing ? (
+        {sharing ? (
+          <RuleSharing
+            rules={rules}
+            toast={toast}
+            onImported={(rs) => {
+              onRulesChanged(rs);
+              setSharing(false);
+            }}
+          />
+        ) : editing ? (
           <RuleEditor
             key={editing.id || "new"}
             initial={editing}
             channels={channels}
+            toxicityOn={toxicityOn}
             onCancel={() => setEditing(null)}
             onSaved={(rs) => {
               onRulesChanged(rs);
@@ -184,11 +227,13 @@ function NumberField(props: {
 function RuleEditor({
   initial,
   channels,
+  toxicityOn,
   onCancel,
   onSaved,
 }: {
   initial: Rule;
   channels: Channel[];
+  toxicityOn: boolean;
   onCancel: () => void;
   onSaved: (rules: Rule[]) => void;
 }) {
@@ -334,6 +379,31 @@ function RuleEditor({
               />
             </label>
           )}
+        </>
+      )}
+
+      {rule.kind === "toxicity" && (
+        <>
+          {!toxicityOn && (
+            <div className="notice">
+              The on-device toxicity check is off, so this rule does nothing yet. Turn it on in Settings → On-device
+              toxicity check.
+            </div>
+          )}
+          <div className="field-row">
+            <NumberField
+              label="Flag when the model is at least"
+              value={rule.params.toxicityPercent}
+              min={1}
+              max={99}
+              suffix="% sure it's toxic"
+              onChange={(n) => setParam("toxicityPercent", n)}
+            />
+          </div>
+          <p className="muted-text">
+            Higher means fewer false alarms but more misses. 85% is a good start; use the tester below to see how
+            messages score.
+          </p>
         </>
       )}
 
@@ -545,7 +615,9 @@ function RuleEditor({
           <span className="hint">This rule depends on account age or message history, so it can't be tried here.</span>
         )}
         {sampleResult &&
-          (sampleResult.error ? (
+          (sampleResult.error?.startsWith("Not flagged") ? (
+            <div className="test-miss">{sampleResult.error}</div>
+          ) : sampleResult.error ? (
             <div className="form-error">{sampleResult.error}</div>
           ) : hit ? (
             <div className="test-hit">

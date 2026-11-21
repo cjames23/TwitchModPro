@@ -15,6 +15,7 @@ import type {
   Rule,
   RuleParams,
   Settings,
+  ToxicityInfo,
   Wave,
 } from "../types";
 
@@ -30,6 +31,7 @@ const params: RuleParams = {
   maxAccountAgeDays: 7,
   fixationCount: 8,
   fixationWindowMins: 10,
+  toxicityPercent: 85,
 };
 const DAY = 86_400_000;
 
@@ -98,6 +100,7 @@ let rules: Rule[] = [
   r({ id: 26, name: "Innuendo", kind: "keyword", severity: "low", pack: "Sexual content", mode: "test", enabled: false, patterns: ["daddy", "step on me"] }),
   r({ id: 27, name: "Self-harm statements", kind: "keyword", severity: "medium", pack: "Wellbeing", mode: "active", wellbeing: true, exemptPrivileged: false, patterns: ["i want to die", "kms"] }),
   r({ id: 28, name: "Telling someone to die", kind: "keyword", severity: "high", pack: "Harassment", mode: "active", patterns: ["kys", "kill yourself", "go die"] }),
+  r({ id: 31, name: "Toxic messages (AI)", kind: "toxicity", severity: "medium", pack: "On-device AI", mode: "test" }),
 ];
 
 const hit = (ruleId: number, display: string, text: string, terms: string[], ago: number, channel = "pixelqueen") => ({
@@ -134,7 +137,13 @@ let settings: Settings = {
   ladderLookbackDays: 30,
   waveMinAccounts: 5,
   waveWindowSecs: 60,
+  evasionCheck: true,
+  pileOnEnabled: true,
+  pileOnMinUsers: 4,
+  pileOnWindowSecs: 120,
+  toxicityEnabled: true,
 };
+let toxicity: ToxicityInfo = { status: { state: "ready" }, scored: 1842, skipped: 0 };
 const ctx = (name: string, text: string, ago: number) => ({ displayName: name, text, timestamp: now - ago });
 let flags: Flag[] = [
   {
@@ -200,6 +209,20 @@ flags.unshift(
     context: [], contextAfter: [], timestamp: now - 90_000, status: "open", resolution: null,
     kind: "suspicious", externalId: "sm1", meta: { banEvasion: "likely", sharedBans: 2, accountCreatedAt: now - 1 * DAY },
   },
+  {
+    id: 9, channel: "kitdy", messageId: "ev1", userId: "u9", userLogin: "troll_guy2", displayName: "troll_guy2",
+    text: "lol you can't get rid of me", severity: "high",
+    matches: [{ ruleId: 0, ruleName: "Possible ban evasion", severity: "high", terms: [], reason: "Name looks like troll_guy, banned here 2d ago: the same name with different numbers or lookalike letters" }],
+    context: [ctx("Mika", "finally a quiet stream", 50_000)], contextAfter: [], timestamp: now - 45_000, status: "open", resolution: null,
+    kind: "evasion", externalId: null, meta: { evasionOf: "troll_guy", evasionChannel: "kitdy", bannedAt: now - 2 * DAY, accountCreatedAt: now - 3 * 3600_000, firstMessage: true },
+  },
+  {
+    id: 10, channel: "speedrunsam", messageId: "tx1", userId: "u10", userLogin: "salty_sid", displayName: "salty_sid",
+    text: "you are honestly the most useless runner i have ever watched", severity: "medium",
+    matches: [{ ruleId: 31, ruleName: "Toxic messages (AI)", severity: "medium", terms: [], reason: "Toxicity model: 94% toxic" }],
+    context: [], contextAfter: [], timestamp: now - 75_000, status: "open", resolution: null,
+    kind: "rule", externalId: null, meta: { toxicity: { toxic: 0.94, severe: 0.02 } },
+  },
 );
 let sanctions: ModAction[] = [
   { id: 100, channel: "kitdy", targetLogin: "hasty_hal", action: "timeout", durationSecs: 600, reason: "", ok: true, error: null, timestamp: now - 25 * 60_000, byApp: false, targetUserId: "u3" },
@@ -222,10 +245,39 @@ let waves: Wave[] = [
     ],
     firstSeen: now - 40_000, lastSeen: now - 20_000, status: "open", severity: "high",
   },
+  {
+    id: 2, kind: "pileOn", key: "new_viewer_nina", channels: ["pixelqueen"],
+    members: [
+      member("edgy_ed", "pixelqueen", "@new_viewer_nina nobody asked", 70_000, false),
+      member("ratio_king", "pixelqueen", "@new_viewer_nina ratio + L + bozo", 62_000, false),
+      member("sal_t", "pixelqueen", "@new_viewer_nina stfu", 50_000, false),
+    ],
+    firstSeen: now - 70_000, lastSeen: now - 50_000, status: "open", severity: "medium",
+    detail: "5 chatters went after @new_viewer_nina within 2 min; 3 of them were hostile.",
+  },
+  {
+    id: 3, kind: "raidRaiders", key: "h8_squad_tv", channels: ["speedrunsam"],
+    members: [
+      member("h8bot_101", "speedrunsam", "this streamer is trash", 25_000),
+      member("h8bot_102", "speedrunsam", "trash stream", 24_000),
+      member("h8bot_103", "speedrunsam", "LOL", 23_000),
+      member("fresh_acct_x", "speedrunsam", "hi", 22_000),
+    ],
+    firstSeen: now - 25_000, lastSeen: now - 10_000, status: "open", severity: "high",
+    detail: "Arrived with h8_squad_tv's raid. 7 of 9 raiders checked have accounts under a week old",
+  },
 ];
 
+const risk = (level: "low" | "medium" | "high", reasons: [number, string][], extra: Partial<NonNullable<Raid["risk"]>> = {}): NonNullable<Raid["risk"]> => ({
+  level, score: reasons.reduce((a, [w]) => a + w, 0), reasons: reasons.map(([weight, text]) => ({ weight, text })), done: true,
+  raiderCreatedAt: null, raiderFollowers: null, priorRaids: 0, chatters: 0, newAccounts: 0, knownAges: 0, firstTimers: 0,
+  flagged: 0, similarNames: 0, waveId: null, ...extra,
+});
 let raids: Raid[] = [
-  { id: 1, channel: "pixelqueen", fromLogin: "bigstreamer", fromDisplayName: "BigStreamer", viewers: 2431, timestamp: now - 30_000, acknowledged: false, fromUserId: null, shoutoutAt: null },
+  { id: 3, channel: "speedrunsam", fromLogin: "h8_squad_tv", fromDisplayName: "h8_squad_tv", viewers: 40, timestamp: now - 25_000, acknowledged: false, fromUserId: null, shoutoutAt: null,
+    risk: risk("high", [[4, "7 of 9 raiders checked have accounts under a week old"], [3, "The raiding channel is only 2 days old"], [3, "3 raiders have near-identical names"], [2, "The raiding channel has only 3 followers"]], { done: false, chatters: 11, newAccounts: 7, knownAges: 9, similarNames: 3, waveId: 3 }) },
+  { id: 1, channel: "pixelqueen", fromLogin: "bigstreamer", fromDisplayName: "BigStreamer", viewers: 2431, timestamp: now - 30 * 60_000, acknowledged: true, fromUserId: null, shoutoutAt: null,
+    risk: risk("low", [[-2, "They've raided your channels 4 times before"], [-1, "The raiding channel is 6 years old"], [-1, "The raiding channel has 182000 followers"]], { chatters: 48, newAccounts: 1, knownAges: 40 }) },
   { id: 2, channel: "kitdy", fromLogin: "smallfriend", fromDisplayName: "SmallFriend", viewers: 12, timestamp: now - 2 * 3600_000, acknowledged: true, fromUserId: null, shoutoutAt: null },
 ];
 let raidModes: RaidModes = { pixelqueen: now + 4 * 60_000 + 30_000 };
@@ -260,7 +312,7 @@ mockIPC(
     switch (cmd) {
       case "get_snapshot":
         return {
-          channels, rules, settings, flags, raids, raidModes, auth, waves, sanctions,
+          channels, rules, settings, flags, raids, raidModes, auth, waves, sanctions, toxicity,
           connection: { status: "connected", joined: ["pixelqueen", "speedrunsam", "kitdy"] },
         };
       case "set_client_id":
@@ -360,6 +412,34 @@ mockIPC(
         const terms = rule.patterns.filter((p) => text.toLowerCase().includes(p.toLowerCase()));
         return terms.length ? [{ ruleId: 0, ruleName: rule.name, severity: rule.severity, terms }] : [];
       }
+      case "get_toxicity_status":
+        return toxicity;
+      case "export_rules":
+        return JSON.stringify(
+          { format: "twitch-mod-pro/rules", version: 1, name: args.name, description: args.description, exportedAt: Date.now(), appVersion: "0.1.0", rules: rules.filter((x) => args.ids.includes(x.id)).map((x) => ({ ...x, id: 0, channels: [] })) },
+          null,
+          2,
+        );
+      case "plugin:dialog|save":
+        return "/Users/you/Downloads/rules.json";
+      case "plugin:dialog|open":
+        return "/Users/you/Downloads/shared-rules.json";
+      case "save_rule_file":
+        return null;
+      case "read_rule_file":
+        return JSON.stringify({ format: "twitch-mod-pro/rules", version: 1, name: "Kitdy's mod rules", rules: [] });
+      case "preview_rule_import":
+        return {
+          name: "Kitdy's mod rules", description: "What we use on cozy streams", exportedAt: now - 3 * DAY,
+          items: [
+            { index: 0, rule: r({ id: 0, name: "Cozy-stream negativity", kind: "keyword", severity: "low", patterns: ["boring", "mid"] }), status: "new", existingId: null, error: null },
+            { index: 1, rule: r({ id: 0, name: "Spoilers", kind: "keyword", severity: "medium", patterns: ["ending"] }), status: "conflict", existingId: 2, error: null },
+            { index: 2, rule: r({ id: 0, name: "Links", kind: "links", severity: "medium" }), status: "identical", existingId: 3, error: null },
+            { index: 3, rule: r({ id: 0, name: "Broken regex", kind: "regex", severity: "low", patterns: ["(oops"] }), status: "invalid", existingId: null, error: "Invalid pattern `(oops`: unclosed group" },
+          ],
+        };
+      case "import_rules":
+        return rules;
       case "set_flag_status":
         flags = flags.map((f) => (f.id === args.id ? { ...f, status: args.status } : f));
         return null;

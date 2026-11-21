@@ -24,6 +24,10 @@ import type {
   ShoutoutResult,
   ModLogEntry,
   Activity,
+  ToxicityInfo,
+  ToxicityScores,
+  ImportPreview,
+  ImportChoice,
 } from "./types";
 
 export const api = {
@@ -62,6 +66,18 @@ export const api = {
   /** pack: a pack name, null for your own rules, or "*" for every rule. */
   setPackChannelAlert: (pack: string | null, channel: string, alert: string) =>
     invoke<Rule[]>("set_pack_channel_alert", { pack, channel, alert }),
+
+  exportRules: (ids: number[], name: string, description: string) =>
+    invoke<string>("export_rules", { ids, name, description }),
+  saveRuleFile: (path: string, text: string) => invoke<void>("save_rule_file", { path, text }),
+  readRuleFile: (path: string) => invoke<string>("read_rule_file", { path }),
+  previewRuleImport: (text: string) => invoke<ImportPreview>("preview_rule_import", { text }),
+  importRules: (text: string, choices: [number, ImportChoice][], group: string, testMode: boolean) =>
+    invoke<Rule[]>("import_rules", { text, choices, group, testMode }),
+
+  // on-device toxicity model
+  toxicityStatus: () => invoke<ToxicityInfo>("get_toxicity_status"),
+  scoreToxicity: (text: string) => invoke<ToxicityScores>("score_toxicity", { text }),
 
   // flags, raids, settings
   setFlagStatus: (id: number, status: string) => invoke<void>("set_flag_status", { id, status }),
@@ -102,10 +118,12 @@ export const api = {
 };
 
 export interface Handlers {
-  onFlag: (e: { flag: Flag; alert: boolean; sound?: boolean }) => void;
+  /** `update` is set when an existing flag changed (e.g. the toxicity model added a match). */
+  onFlag: (e: { flag: Flag; alert: boolean; sound?: boolean; update?: boolean }) => void;
   onFlagContext: (e: { id: number; line: ContextLine }) => void;
   onFlagsResolved: (e: { ids: number[]; resolution: string }) => void;
-  onRaid: (e: { raid: Raid; alert: boolean; sound?: boolean }) => void;
+  /** `update` is set when a raid's risk score changed. */
+  onRaid: (e: { raid: Raid; alert: boolean; sound?: boolean; update?: boolean }) => void;
   onRaidMode: (modes: RaidModes) => void;
   onChat: (batch: LiveMessage[]) => void;
   onConnection: (info: ConnectionInfo) => void;
@@ -119,14 +137,15 @@ export interface Handlers {
   onAccountAges: (ages: Record<string, number>) => void;
   onMessageDeleted: (e: { channel: string; messageId: string }) => void;
   onInboxStatus: (e: { connected: boolean }) => void;
+  onToxicity: (info: ToxicityInfo) => void;
 }
 
 export async function subscribe(h: Handlers): Promise<UnlistenFn> {
   const offs = await Promise.all([
-    listen<{ flag: Flag; alert: boolean; sound?: boolean }>("flag", (e) => h.onFlag(e.payload)),
+    listen<{ flag: Flag; alert: boolean; sound?: boolean; update?: boolean }>("flag", (e) => h.onFlag(e.payload)),
     listen<{ id: number; line: ContextLine }>("flag-context", (e) => h.onFlagContext(e.payload)),
     listen<{ ids: number[]; resolution: string }>("flags-resolved", (e) => h.onFlagsResolved(e.payload)),
-    listen<{ raid: Raid; alert: boolean; sound?: boolean }>("raid", (e) => h.onRaid(e.payload)),
+    listen<{ raid: Raid; alert: boolean; sound?: boolean; update?: boolean }>("raid", (e) => h.onRaid(e.payload)),
     listen<RaidModes>("raid-mode", (e) => h.onRaidMode(e.payload)),
     listen<LiveMessage[]>("chat-batch", (e) => h.onChat(e.payload)),
     listen<ConnectionInfo>("connection", (e) => h.onConnection(e.payload)),
@@ -140,6 +159,7 @@ export async function subscribe(h: Handlers): Promise<UnlistenFn> {
     listen<Record<string, number>>("account-ages", (e) => h.onAccountAges(e.payload)),
     listen<{ channel: string; messageId: string }>("message-deleted", (e) => h.onMessageDeleted(e.payload)),
     listen<{ connected: boolean }>("inbox-status", (e) => h.onInboxStatus(e.payload)),
+    listen<ToxicityInfo>("toxicity-status", (e) => h.onToxicity(e.payload)),
   ]);
   return () => offs.forEach((off) => off());
 }
